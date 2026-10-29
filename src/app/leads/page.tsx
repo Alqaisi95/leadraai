@@ -36,7 +36,7 @@ export default function LeadsPage() {
               </div>
               {stage.opportunities.map((opp: any) => (
                 <div className="lead-card" key={opp.id}>
-                  <div className="name">{opp.lead.fullName ?? opp.lead.igUsername ?? "عميل"}</div>
+                  <a className="name" style={{ display: "block" }} href={`/leads/${opp.lead.id}`}>{opp.lead.fullName ?? opp.lead.igUsername ?? "عميل"}</a>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span className={`score-badge score-${opp.lead.temperature}`}>{opp.lead.score}</span>
                     {opp.lead.phone && <span style={{ fontSize: 11.5, color: "var(--text-dim)", direction: "ltr" }}>{opp.lead.phone}</span>}

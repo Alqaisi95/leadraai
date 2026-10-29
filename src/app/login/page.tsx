@@ -21,6 +21,7 @@ export default function LoginPage() {
       const first = me.memberships?.[0];
       if (!first) { setError("لا توجد عضوية نشطة بأي شركة"); return; }
       localStorage.setItem("leadra_org", first.organizationId);
+      localStorage.setItem("leadra_role", first.role);
       window.location.href = "/dashboard";
     } catch (e: any) {
       if (e.code === "MFA_REQUIRED") { setNeedsMfa(true); setError("أدخل رمز تطبيق المصادقة"); }

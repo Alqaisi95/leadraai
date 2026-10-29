@@ -13,11 +13,12 @@ export function getOrg() {
 export async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> {
   const orgId = getOrg();
   const method = (options.method ?? "GET").toUpperCase();
+  const isForm = typeof FormData !== "undefined" && options.body instanceof FormData;
   const res = await fetch(path, {
     ...options,
     credentials: "same-origin",
     headers: {
-      "Content-Type": "application/json",
+      ...(isForm ? {} : { "Content-Type": "application/json" }),
       ...(orgId ? { "X-Organization-Id": orgId } : {}),
       ...(method !== "GET" ? { "X-CSRF-Token": readCookie("leadra_csrf") ?? "" } : {}),
       ...(options.headers ?? {}),

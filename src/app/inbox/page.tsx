@@ -22,8 +22,17 @@ export default function InboxPage() {
     const params = filter ? `?status=${filter}` : "";
     const data = await api(`/api/conversations${params}`);
     setConversations(data.items);
+    return data.items as any[];
   }
-  useEffect(() => { loadList().catch(() => {}); }, [filter]);
+  useEffect(() => {
+    loadList()
+      .then((items) => {
+        // deep link from the lead page: /inbox?c=<conversationId>
+        const wanted = new URLSearchParams(window.location.search).get("c");
+        if (wanted && !active) open(items.find((c) => c.id === wanted) ?? { id: wanted });
+      })
+      .catch(() => {});
+  }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function open(conv: any) {
     setActive(conv);
@@ -86,10 +95,15 @@ export default function InboxPage() {
             <>
               <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", fontWeight: 600, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span>
-                  {active.lead?.fullName ?? active.customerUsername}
+                  {active.lead?.fullName ?? active.customerUsername ?? "محادثة"}
                   <span className={`status-pill status-${active.status}`} style={{ marginRight: 10 }}>{STATUS_AR[active.status]}</span>
                 </span>
-                {active.lead && <button className="btn ghost sm" onClick={loadMatches}>🏠 الوحدات المطابقة</button>}
+                {active.lead && (
+                  <span className="row" style={{ gap: 6 }}>
+                    <a className="btn ghost sm" href={`/leads/${active.lead.id}`}>ملف العميل</a>
+                    <button className="btn ghost sm" onClick={loadMatches}>🏠 الوحدات المطابقة</button>
+                  </span>
+                )}
               </div>
               {matches && (
                 <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--line)", background: "#FAF9F6", maxHeight: 180, overflowY: "auto" }}>
