@@ -8,3 +8,5 @@ node_modules/
 cloudflare-env.d.ts
 next-env.d.ts
 tsconfig.tsbuildinfo
+evals/report.json
+evals/report.md

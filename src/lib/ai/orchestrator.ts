@@ -3,18 +3,15 @@
  * Runs ONLY from the worker, never inside the webhook request.
  * Refuses any conversation not in AI_ACTIVE (collision guard with agents).
  */
-import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "../db";
 import { transition } from "../conversations";
 import { sendInstagramMessage } from "../meta";
 import { findOrCreateLeadForConversation, updateLeadFromExtraction } from "../leads";
 import { applyScoringEvent } from "../scoring";
-import { searchKnowledge } from "./knowledge";
-import { DEFAULT_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT_NAME, buildUserPrompt } from "./prompts";
-import { parseAiJson, priceGuard, shouldHandoff } from "./safety";
+import { searchKnowledge, queryConcepts } from "./knowledge";
+import { DEFAULT_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT_NAME } from "./prompts";
+import { draftReply, retrievalQuery, type AiRunDetails } from "./respond";
 import { aiAllowed } from "../billing";
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 export async function handleInboundWithAi(conversationId: string) {
   const started = Date.now();
@@ -49,9 +46,12 @@ export async function handleInboundWithAi(conversationId: string) {
     take: 12,
   });
   const lastCustomerMsg = history.find((m) => m.senderType === "CUSTOMER")?.body ?? "";
+  const chronological = [...history].reverse().map((m) => ({ role: m.senderType, text: m.body ?? "" }));
+  // follow-ups like "وكم المقدم؟" only make sense with the previous question
+  const query = retrievalQuery(chronological);
 
   // context: knowledge + LIVE inventory (single source of truth)
-  const knowledgeChunks = await searchKnowledge(conv.organizationId, lastCustomerMsg, lead.interestedProjectId);
+  const knowledgeChunks = await searchKnowledge(conv.organizationId, query, lead.interestedProjectId);
   const units = await prisma.unit.findMany({
     where: {
       organizationId: conv.organizationId,
@@ -78,31 +78,19 @@ export async function handleInboundWithAi(conversationId: string) {
   }
 
   const systemPrompt = promptVersion.content.replace("{{ORG_NAME}}", conv.organization.name);
-  const userPrompt = buildUserPrompt({
-    history: history.reverse().map((m) => ({ role: m.senderType, text: m.body ?? "" })),
-    knowledgeChunks,
-    inventory,
-  });
-
-  let aiError: string | null = null;
-  let response: string = "";
-  try {
-    const completion = await anthropic.messages.create({
-      model: process.env.AI_MODEL || "claude-sonnet-4-6",
-      max_tokens: 800,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-    });
-    response = completion.content.filter((b) => b.type === "text").map((b: any) => b.text).join("");
-  } catch (e) {
-    aiError = String(e);
-  }
-
-  const ai = aiError ? null : parseAiJson(response);
-  const priceOk = ai ? priceGuard(ai.reply, inventory.map((u) => u.price)) : false;
-  const decision = ai ? shouldHandoff(ai, priceOk) : { handoff: true, reason: aiError ? "ai_failure" : "parse_failure" };
+  const draft = await draftReply({ systemPrompt, history: chronological, knowledgeChunks, inventory });
+  const { ai, decision } = draft;
 
   // audit the run (never full message bodies)
+  const details: AiRunDetails = {
+    chunks: knowledgeChunks.map((c) => ({ sourceId: c.sourceId, title: c.sourceTitle })),
+    reason: decision.reason,
+    model: draft.model,
+    usage: draft.usage,
+    // search terms only, not the raw message (which may contain phone numbers etc.)
+    terms: queryConcepts(query).map((c) => c[0]),
+    intent: ai?.intent ?? null,
+  };
   await prisma.aiRun.create({
     data: {
       organizationId: conv.organizationId,
@@ -112,10 +100,11 @@ export async function handleInboundWithAi(conversationId: string) {
       inputSummary: lastCustomerMsg.slice(0, 120),
       outputSummary: ai?.reply?.slice(0, 120) ?? null,
       confidence: ai?.confidence ?? null,
-      sources: knowledgeChunks.length ? knowledgeChunks.map((c) => ({ sourceId: c.sourceId, title: c.sourceTitle })) : undefined,
+      sources: details as object,
       handedOff: decision.handoff,
       latencyMs: Date.now() - started,
-      error: aiError?.slice(0, 300) ?? (decision.reason === "price_guard" ? "blocked_by_price_guard" : null),
+      costUsd: draft.costUsd ?? undefined,
+      error: draft.error ?? (decision.reason === "price_guard" ? "blocked_by_price_guard" : null),
     },
   });
 

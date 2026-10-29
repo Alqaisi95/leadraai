@@ -1,0 +1,39 @@
+name: AI eval
+
+# Actions → "AI eval" → Run workflow. Needs the repository secret ANTHROPIC_API_KEY
+# (Settings → Secrets and variables → Actions). Costs a few cents per run.
+# Run it before changing the prompt or the AI model, and compare the reports.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model id (empty = the app default)"
+        required: false
+      only:
+        description: "Only cases whose id starts with (e.g. iq-)"
+        required: false
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Run eval
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AI_MODEL: ${{ inputs.model }}
+        run: |
+          args=""
+          if [ -n "${{ inputs.only }}" ]; then args="--only ${{ inputs.only }}"; fi
+          npm run eval -- $args || status=$?
+          cat evals/report.md >> "$GITHUB_STEP_SUMMARY"
+          exit ${status:-0}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ai-eval-report
+          path: evals/report.*

@@ -44,6 +44,7 @@ export default function LeadPage() {
       <div className="two-col">
         <div className="stack">
           <Conversation conversation={lead.conversation} />
+          {lead.conversation && <AiDecisions conversationId={lead.conversation.id} />}
           <Notes lead={lead} onAdded={async () => { await load(); }} />
           <Tasks lead={lead} onChanged={load} />
           <ScoreHistory events={lead.scoreEvents} />
@@ -291,6 +292,62 @@ function ScoreHistory({ events }: { events: any[] }) {
                 <span className="muted">{dateTime(e.createdAt)}</span>
               </span>
             </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const REASON: Record<string, string> = {
+  price_guard: "حارس الأسعار منع الرد — ذكر سعراً غير موجود في المخزون",
+  low_confidence: "ثقة منخفضة في الجواب",
+  human_requested: "العميل طلب موظفاً",
+  complaint: "شكوى أو انزعاج",
+  contractual: "سؤال تعاقدي أو قانوني",
+  model_decision: "قرر الذكاء الاصطناعي التحويل",
+  ai_failure: "تعذّر الاتصال بالنموذج",
+  parse_failure: "رد غير صالح من النموذج",
+};
+
+function AiDecisions({ conversationId }: { conversationId: string }) {
+  const [items, setItems] = useState<any[] | null>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (open && items === null) api(`/api/conversations/${conversationId}/ai-runs`).then((r) => setItems(r.items)).catch(() => setItems([]));
+  }, [open, items, conversationId]);
+
+  return (
+    <div className="card">
+      <button className="spread" style={{ width: "100%", background: "none", border: 0, padding: 0 }} onClick={() => setOpen(!open)} aria-expanded={open}>
+        <span className="section-title" style={{ marginBottom: 0 }}>لماذا ردّ الذكاء الاصطناعي هكذا؟</span>
+        <span className="muted">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="stack" style={{ marginTop: 12 }}>
+          {items === null && <p className="muted small">جارٍ التحميل…</p>}
+          {items?.length === 0 && <p className="muted small">لم يرد الذكاء الاصطناعي في هذه المحادثة بعد.</p>}
+          {items?.map((r) => (
+            <div key={r.id} className="timeline"><div className="item small">
+              <div className="spread">
+                <span className="muted">{dateTime(r.createdAt)}</span>
+                <span className="row" style={{ gap: 6 }}>
+                  {r.confidence !== null && <span className="chip">ثقة {Math.round(r.confidence * 100)}%</span>}
+                  <span className={`chip ${r.handedOff ? "unit-TEMP_RESERVED" : "unit-AVAILABLE"}`}>{r.handedOff ? "حُوّلت لموظف" : "ردّ تلقائياً"}</span>
+                </span>
+              </div>
+              {r.input && <div style={{ marginTop: 4 }}><span className="muted">السؤال: </span>{r.input}</div>}
+              {r.output && <div><span className="muted">{r.handedOff ? "المسودة (لم تُرسل): " : "الرد: "}</span>{r.output}</div>}
+              {r.handedOff && <div style={{ color: "var(--warm)" }}>السبب: {REASON[r.reason] ?? r.reason ?? "—"}</div>}
+              {r.error && <div className="error-text">خطأ: {r.error}</div>}
+              <div className="muted">
+                المصادر: {r.sources.length ? r.sources.join("، ") : "لا شيء — أجاب من بيانات المخزون فقط أو لم يجد ما يطابق"}
+                {r.terms.length > 0 && <> · بحث عن: {r.terms.join("، ")}</>}
+              </div>
+              <div className="muted ltr" style={{ textAlign: "right", fontSize: 11 }}>
+                {[r.prompt, r.model, r.tokens ? `${r.tokens} tokens` : null, r.latencyMs ? `${r.latencyMs} ms` : null].filter(Boolean).join(" · ")}
+              </div>
+            </div></div>
           ))}
         </div>
       )}

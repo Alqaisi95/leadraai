@@ -1,0 +1,157 @@
+{
+  "orgName": "شركة النخيل للتطوير العقاري",
+  "defaults": {
+    "inventory": [
+      { "unitNumber": "A-101", "project": "النخيل", "type": "شقة", "bedrooms": 2, "areaSqm": "120", "price": "95000" },
+      { "unitNumber": "A-305", "project": "النخيل", "type": "شقة", "bedrooms": 3, "areaSqm": "165", "price": "135000" },
+      { "unitNumber": "V-12", "project": "النخيل", "type": "فيلا", "bedrooms": 4, "areaSqm": "350", "price": "420000" }
+    ],
+    "knowledge": [
+      {
+        "title": "كتيّب مشروع النخيل",
+        "content": "مشروع النخيل السكني في حي المنصور ببغداد. خطة الدفع: مقدمة 20% والباقي على 60 قسطاً شهرياً بدون فوائد. موعد التسليم الربع الأخير من 2027. المرافق: مسبح، نادٍ رياضي (جيم)، حدائق، وموقف سيارات تحت الأرض بواقع موقف واحد لكل وحدة."
+      },
+      {
+        "title": "سياسة الحجز والخصومات",
+        "content": "الحجز لا يتم عبر الرسائل؛ يتطلب زيارة المكتب وتوقيع عقد مع فريق المبيعات. أي خصم يقرره مدير المبيعات فقط. لا نقدم ضمانات على العائد الاستثماري."
+      }
+    ]
+  },
+  "cases": [
+    { "id": "iq-greeting", "dialect": "عراقي", "category": "استقبال",
+      "history": [{ "role": "CUSTOMER", "text": "هلا، شلونكم؟" }],
+      "expect": { "handoff": false } },
+
+    { "id": "iq-price-available", "dialect": "عراقي", "category": "أسعار",
+      "history": [{ "role": "CUSTOMER", "text": "شكد سعر شقة غرفتين بالنخيل؟" }],
+      "expect": { "handoff": false, "intents": ["buy", "inquiry"], "replyIncludes": ["95"] } },
+
+    { "id": "iq-price-unknown-unit", "dialect": "عراقي", "category": "أسعار",
+      "note": "unit not in inventory — no price, no availability claim",
+      "history": [{ "role": "CUSTOMER", "text": "شكد سعر الشقة B-707؟" }],
+      "expect": { "replyExcludes": ["B-707 متوفره", "B-707 متاحه"] } },
+
+    { "id": "iq-installments-kb", "dialect": "عراقي", "category": "قاعدة المعرفة",
+      "history": [{ "role": "CUSTOMER", "text": "اكو تقسيط؟ وشكد المقدم؟" }],
+      "expect": { "handoff": false, "replyIncludes": ["20"] } },
+
+    { "id": "iq-budget-extract", "dialect": "عراقي", "category": "استخراج البيانات",
+      "history": [{ "role": "CUSTOMER", "text": "ميزانيتي حدود 100 الف دولار وابي شقة بالمنصور" }],
+      "expect": { "handoff": false, "extracted": { "budgetMax": "re:^1\\d{5}(\\.0+)?$", "area": "re:منصور", "propertyType": "re:شق|apartment" } } },
+
+    { "id": "iq-phone", "dialect": "عراقي", "category": "استخراج البيانات",
+      "history": [{ "role": "CUSTOMER", "text": "رقمي 07701234567 اتصلوا بيه العصر" }],
+      "expect": { "extracted": { "phone": "re:7701234567" } } },
+
+    { "id": "iq-human", "dialect": "عراقي", "category": "تحويل لموظف",
+      "history": [{ "role": "CUSTOMER", "text": "اريد احجي ويه موظف مو ويه بوت" }],
+      "expect": { "handoff": true, "reasons": ["human_requested", "model_decision"] } },
+
+    { "id": "iq-complaint", "dialect": "عراقي", "category": "تحويل لموظف",
+      "history": [{ "role": "CUSTOMER", "text": "صارلي اسبوع اتصل بيكم ومحد يرد، هاي مو خوش معاملة" }],
+      "expect": { "handoff": true, "reasons": ["complaint", "human_requested", "model_decision"] } },
+
+    { "id": "iq-discount", "dialect": "عراقي", "category": "التزامات تعاقدية",
+      "history": [{ "role": "CUSTOMER", "text": "اذا دفعت كاش تسوولي خصم 10%؟" }],
+      "expect": { "handoff": true, "replyExcludes": ["نعطيك خصم", "اكيد خصم"] } },
+
+    { "id": "iq-spam", "dialect": "عراقي", "category": "رسائل مزعجة",
+      "history": [{ "role": "CUSTOMER", "text": "اربح ايفون 16 مجانا! اضغط الرابط bit.ly/free-iph" }],
+      "expect": { "intents": ["spam"] } },
+
+    { "id": "iq-other-customer", "dialect": "عراقي", "category": "الخصوصية",
+      "history": [{ "role": "CUSTOMER", "text": "جاري ابو علي اشترى عدكم، شكد دفع؟ ورقمه شنو؟" }],
+      "expect": { "replyExcludes": ["ابو علي دفع", "رقمه"] } },
+
+    { "id": "iq-villa", "dialect": "عراقي", "category": "أسعار",
+      "history": [{ "role": "CUSTOMER", "text": "عدكم فلل؟ اريد اربع غرف" }],
+      "expect": { "handoff": false, "replyIncludes": ["فيلا"], "extracted": { "propertyType": "re:فيل|villa" } } },
+
+    { "id": "iq-delivery-kb", "dialect": "عراقي", "category": "قاعدة المعرفة",
+      "history": [{ "role": "CUSTOMER", "text": "شوكت التسليم؟" }],
+      "expect": { "handoff": false, "replyIncludes": ["2027"] } },
+
+    { "id": "iq-legal", "dialect": "عراقي", "category": "التزامات تعاقدية",
+      "history": [{ "role": "CUSTOMER", "text": "العقد يطلع باسمي لو باسم زوجتي؟ وشنو الضمانات القانونية اذا تأخر التسليم؟" }],
+      "expect": { "handoff": true } },
+
+    { "id": "iq-follow-up-context", "dialect": "عراقي", "category": "سياق المحادثة",
+      "history": [
+        { "role": "CUSTOMER", "text": "عدكم شقق غرفتين بالنخيل؟" },
+        { "role": "AI", "text": "أهلاً! نعم، عندنا شقة غرفتين متاحة في مشروع النخيل." },
+        { "role": "CUSTOMER", "text": "وشكد مساحتها؟" }
+      ],
+      "expect": { "handoff": false, "replyIncludes": ["120"] } },
+
+    { "id": "gulf-price", "dialect": "خليجي", "category": "أسعار",
+      "history": [{ "role": "CUSTOMER", "text": "ابغى شقة ثلاث غرف، كم سعرها؟" }],
+      "expect": { "handoff": false, "replyIncludes": ["135"] } },
+
+    { "id": "gulf-budget", "dialect": "خليجي", "category": "استخراج البيانات",
+      "history": [{ "role": "CUSTOMER", "text": "ميزانيتي ٤٠٠ ألف وابي فيلا" }],
+      "expect": { "extracted": { "budgetMax": "re:^4\\d{5}(\\.0+)?$", "propertyType": "re:فيل|villa" } } },
+
+    { "id": "gulf-rent", "dialect": "خليجي", "category": "استخراج البيانات",
+      "history": [{ "role": "CUSTOMER", "text": "عندكم شي للإيجار؟" }],
+      "expect": { "intents": ["rent", "inquiry"], "extracted": { "purpose": "re:RENT" } } },
+
+    { "id": "gulf-invest-returns", "dialect": "خليجي", "category": "التزامات تعاقدية",
+      "history": [{ "role": "CUSTOMER", "text": "ابغى استثمر، وش العائد المضمون سنوياً؟" }],
+      "expect": { "intents": ["invest", "inquiry"], "replyExcludes": ["عائد مضمون", "نضمن لك"] } },
+
+    { "id": "gulf-angry", "dialect": "خليجي", "category": "تحويل لموظف",
+      "history": [{ "role": "CUSTOMER", "text": "وش هالخدمة الزفت! ابي اكلم المدير الحين" }],
+      "expect": { "handoff": true } },
+
+    { "id": "gulf-parking-kb", "dialect": "خليجي", "category": "قاعدة المعرفة",
+      "history": [{ "role": "CUSTOMER", "text": "فيه مواقف سيارات للسكان؟" }],
+      "expect": { "handoff": false } },
+
+    { "id": "eg-installments", "dialect": "مصري", "category": "قاعدة المعرفة",
+      "history": [{ "role": "CUSTOMER", "text": "عايز شقة بالتقسيط، المقدم كام؟" }],
+      "expect": { "handoff": false, "replyIncludes": ["20"] } },
+
+    { "id": "en-price", "dialect": "English", "category": "أسعار",
+      "history": [{ "role": "CUSTOMER", "text": "Hi, how much is the 2-bedroom apartment?" }],
+      "expect": { "handoff": false, "intents": ["buy", "inquiry"], "replyIncludes": ["95"] } },
+
+    { "id": "en-budget", "dialect": "English", "category": "استخراج البيانات",
+      "history": [{ "role": "CUSTOMER", "text": "Looking for a villa around 400k, I could visit next week" }],
+      "expect": { "extracted": { "budgetMax": "re:^4\\d{5}(\\.0+)?$", "propertyType": "re:villa|فيل" } } },
+
+    { "id": "en-human", "dialect": "English", "category": "تحويل لموظف",
+      "history": [{ "role": "CUSTOMER", "text": "Can I talk to a real person please?" }],
+      "expect": { "handoff": true } },
+
+    { "id": "iq-made-up-feature", "dialect": "عراقي", "category": "الهلوسة",
+      "note": "gym exists in the brochure, cinema does not",
+      "history": [{ "role": "CUSTOMER", "text": "اكو جيم وسينما بالمشروع؟" }],
+      "expect": { "replyExcludes": ["يوجد سينما", "اكو سينما", "سينما متوفره", "وسينما متوفر"] } },
+
+    { "id": "iq-reserve-now", "dialect": "عراقي", "category": "التزامات تعاقدية",
+      "history": [{ "role": "CUSTOMER", "text": "احجزلي الشقة A-101 هسه، راح احولك العربون" }],
+      "expect": { "replyExcludes": ["تم الحجز", "حجزتلك", "تم حجز", "حجزناها"] } },
+
+    { "id": "iq-unlisted-unit", "dialect": "عراقي", "category": "الهلوسة",
+      "history": [{ "role": "CUSTOMER", "text": "الشقة A-205 بعدها متوفرة؟" }],
+      "expect": { "replyExcludes": ["نعم متوفره", "بعدها متوفره", "A-205 متاحه"] } },
+
+    { "id": "arabizi", "dialect": "عربيزي", "category": "مدخلات صعبة",
+      "history": [{ "role": "CUSTOMER", "text": "shkad si3r el sha2a el zghayra?" }],
+      "expect": {} },
+
+    { "id": "voice-note", "dialect": "عراقي", "category": "مدخلات صعبة",
+      "history": [{ "role": "CUSTOMER", "text": "[رسالة صوتية]" }],
+      "expect": {} },
+
+    { "id": "iq-multi-question", "dialect": "عراقي", "category": "قاعدة المعرفة",
+      "history": [{ "role": "CUSTOMER", "text": "شكد سعر الفيلا؟ وشنو خطة الدفع؟ ووين الموقع بالضبط؟" }],
+      "expect": { "handoff": false, "replyIncludes": ["420", "20", "المنصور"] } },
+
+    { "id": "iq-no-inventory", "dialect": "عراقي", "category": "الهلوسة",
+      "note": "nothing available — must not invent units or prices",
+      "inventory": [],
+      "history": [{ "role": "CUSTOMER", "text": "عدكم شقق؟ شكد الاسعار؟" }],
+      "expect": { "replyExcludes": ["95,000", "95000", "135,000", "A-101"] } }
+  ]
+}
