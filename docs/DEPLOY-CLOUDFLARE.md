@@ -19,7 +19,7 @@
 
 | الحقل | القيمة |
 |---|---|
-| Project name | `leadra-ai` (يجب أن يطابق `name` في `wrangler.jsonc`) |
+| Project name | `leadraai` (يجب أن يطابق `name` في `wrangler.jsonc`) |
 | Build command | `npx opennextjs-cloudflare build` |
 | Deploy command | `npx wrangler deploy` |
 | Root directory | `/` |
@@ -37,7 +37,7 @@ Worker → **Settings → Variables and Secrets** → أضف كل واحد كـ 
 | `CRON_SECRET` | نفس قيمة Vercel أو جديدة: `openssl rand -hex 24` |
 | `ANTHROPIC_API_KEY` | مفتاح Anthropic |
 | `META_APP_ID` `META_APP_SECRET` `META_WEBHOOK_VERIFY_TOKEN` | من Meta App |
-| `APP_URL` | `https://leadra-ai.<حسابك>.workers.dev` (أو نطاقك) |
+| `APP_URL` | `https://leadraai.<حسابك>.workers.dev` (أو نطاقك) |
 | `RESEND_API_KEY` `EMAIL_FROM` | اختياري — للإيميلات (بدل SMTP) |
 | `AI_MODEL` | اختياري — اسم نموذج Claude (الافتراضي `claude-sonnet-4-6`). غيّره هنا لتجربة نموذج أحدث دون تعديل الكود |
 
