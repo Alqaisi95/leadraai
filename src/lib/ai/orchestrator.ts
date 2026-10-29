@@ -88,7 +88,7 @@ export async function handleInboundWithAi(conversationId: string) {
   let response: string = "";
   try {
     const completion = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
+      model: process.env.AI_MODEL || "claude-sonnet-4-6",
       max_tokens: 800,
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }],

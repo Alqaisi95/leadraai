@@ -7,8 +7,11 @@ import { checkRateLimit } from "@/lib/ratelimit";
 const schema = z.object({ email: z.string().email(), password: z.string().min(8), totp: z.string().optional() });
 
 export async function POST(req: NextRequest) {
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
-  const rl = checkRateLimit(`ip:${ip}`, "/api/auth/login");
+  const ip =
+    req.headers.get("cf-connecting-ip") ??
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    "unknown";
+  const rl = await checkRateLimit(`ip:${ip}`, "/api/auth/login");
   if (!rl.ok) return NextResponse.json({ error: { code: "RATE_LIMITED", message: "Too many requests" } }, { status: 429 });
 
   const body = schema.safeParse(await req.json());

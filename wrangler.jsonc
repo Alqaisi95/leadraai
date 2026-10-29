@@ -15,6 +15,24 @@
     "crons": ["* * * * *", "0 * * * *"]
   },
 
+  // Inbound Meta events: the webhook route signals this queue and the
+  // consumer in worker/cloudflare.ts processes them within seconds.
+  // Create the queue once before deploying: Storage & Databases → Queues →
+  // Create → name "leadra-webhooks" (requires the Workers Paid plan).
+  "queues": {
+    "producers": [{ "binding": "WEBHOOK_QUEUE", "queue": "leadra-webhooks" }],
+    "consumers": [
+      { "queue": "leadra-webhooks", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 3 }
+    ]
+  },
+
+  // Rate limiting shared across isolates (src/lib/ratelimit.ts).
+  // namespace_id is any number unique within your account.
+  "ratelimits": [
+    { "name": "RL_LOGIN", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
+    { "name": "RL_API", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
+  ],
+
   // Database: by default the app connects with the DATABASE_URL secret.
   // Optional speed-up — put PostgreSQL behind Hyperdrive (Storage & Databases →
   // Hyperdrive in the dashboard), then uncomment this block with its ID:

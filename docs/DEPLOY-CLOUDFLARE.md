@@ -6,6 +6,11 @@
 
 ---
 
+## 0) أنشئ الطابور (مرة واحدة، قبل أول نشر)
+
+**Storage & Databases → Queues → Create** باسم **`leadra-webhooks`** بالضبط.
+بدونه يفشل النشر برسالة أن الطابور غير موجود. (الطوابير تتطلب خطة Workers Paid.)
+
 ## 1) أنشئ الـ Worker من GitHub
 
 1. **dash.cloudflare.com** → Compute (Workers) → **Create** → **Import a repository**
@@ -34,16 +39,19 @@ Worker → **Settings → Variables and Secrets** → أضف كل واحد كـ 
 | `META_APP_ID` `META_APP_SECRET` `META_WEBHOOK_VERIFY_TOKEN` | من Meta App |
 | `APP_URL` | `https://leadra-ai.<حسابك>.workers.dev` (أو نطاقك) |
 | `RESEND_API_KEY` `EMAIL_FROM` | اختياري — للإيميلات (بدل SMTP) |
+| `AI_MODEL` | اختياري — اسم نموذج Claude (الافتراضي `claude-sonnet-4-6`). غيّره هنا لتجربة نموذج أحدث دون تعديل الكود |
 
 > انسخ القيم من Vercel → Project → Settings → Environment Variables.
 
 ثم من **Deployments** أعد النشر (Retry) حتى تُقرأ المتغيرات.
 
-## 3) Cron (معالجة الرسائل)
+## 3) معالجة الرسائل (الطابور + Cron)
 
-لا شيء تفعله — `wrangler.jsonc` يعرّف:
-- `* * * * *` → `/api/worker/drain` (طابور الرسائل الواردة)
+لا شيء تفعله بعد الخطوة 0:
+- كل رسالة Instagram تُخزَّن ثم تُرسل إشارة إلى طابور `leadra-webhooks`، فتُعالَج خلال ثوانٍ
+- `* * * * *` → `/api/worker/drain` شبكة أمان كل دقيقة لأي حدث فاتته الإشارة
 - `0 * * * *` → `/api/worker/jobs` (المهام المجدولة)
+- حدّ الطلبات (10 محاولات دخول/دقيقة، 120 طلباً/دقيقة لكل مستخدم) يعمل عبر Rate Limiting من Cloudflare تلقائياً
 
 تراها في Worker → **Settings → Trigger Events**. اختبار يدوي:
 ```bash
@@ -65,10 +73,24 @@ curl https://<رابط-الـWorker>/api/worker/drain -H "Authorization: Bearer 
 
 ## 6) الترحيلات (Migrations)
 
-البناء على Cloudflare **لا** يشغّل الترحيلات. عند تغيير `schema.prisma` شغّلها من جهازك:
+**مرة واحدة — الترحيل الأساسي:** القاعدة الحالية أُنشئت بلا ملفات ترحيل. من GitHub:
+**Actions → Baseline migration → Run workflow** → يفتح PR فيه `prisma/migrations/0_init`. ادمجه، ثم من جهازك:
 ```bash
-DATABASE_URL="..." npx prisma migrate deploy
+DATABASE_URL="رابط-الإنتاج" npx prisma migrate resolve --applied 0_init
 ```
+هذا يسجّل أن الجداول موجودة أصلاً دون أن يلمس البيانات.
+
+**بعدها:** البناء على Cloudflare **لا** يشغّل الترحيلات. عند تغيير `schema.prisma`:
+```bash
+npx prisma migrate dev --name وصف-التغيير          # محلياً
+DATABASE_URL="رابط-الإنتاج" npx prisma migrate deploy  # على الإنتاج
+```
+
+## 7) المراقبة
+
+- `GET /api/health` → `{"ok":true}` (200) أو 503 إذا القاعدة لا ترد — ضعه في أي خدمة مراقبة (UptimeRobot مثلاً) كل 5 دقائق
+- مع `Authorization: Bearer CRON_SECRET` يعطي التفاصيل: عدد الأحداث المنتظرة والميتة، عمر أقدم حدث، آخر معالجة، النموذج المستخدم. يرجع 503 إذا علق حدث أكثر من 5 دقائق
+- السجلات: Worker → **Logs** (Observability مفعّل في `wrangler.jsonc`)
 
 ---
 

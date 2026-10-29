@@ -8,6 +8,8 @@ const nextConfig: NextConfig = {
 
 export default nextConfig;
 
-// Gives `next dev` access to Cloudflare bindings (Hyperdrive, vars) from wrangler.jsonc.
+// Gives `next dev` access to Cloudflare bindings from wrangler.jsonc.
+// Dev only: during `next build` several workers would each start a local
+// runtime and collide on its storage (SQLITE_BUSY with queues/rate limits).
 import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
-initOpenNextCloudflareForDev();
+if (process.env.NODE_ENV === "development") initOpenNextCloudflareForDev();

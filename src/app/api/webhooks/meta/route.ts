@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/db";
+import { cfEnv } from "@/lib/cf";
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
@@ -34,6 +35,7 @@ export async function POST(req: NextRequest) {
   // 2. Store raw + ACK fast. Dedup via unique(provider, externalEventId).
   const payload = JSON.parse(rawBody);
   const entries: any[] = payload.entry ?? [];
+  let stored = 0;
 
   for (const entry of entries) {
     for (const messaging of entry.messaging ?? []) {
@@ -47,9 +49,21 @@ export async function POST(req: NextRequest) {
             status: "QUEUED",
           },
         });
+        stored++;
       } catch (e: any) {
         if (e?.code !== "P2002") throw e; // P2002 = duplicate → already received, ignore silently
       }
+    }
+  }
+
+  // 3. Wake the consumer now instead of waiting for the next cron tick.
+  //    The DB row is the source of truth; the queue message is only a signal,
+  //    so a failed send just means the minute cron picks it up.
+  if (stored > 0) {
+    try {
+      await cfEnv()?.WEBHOOK_QUEUE?.send({ stored, at: Date.now() });
+    } catch (e) {
+      console.error("queue_send_failed", String(e).slice(0, 200));
     }
   }
 

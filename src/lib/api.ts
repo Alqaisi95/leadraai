@@ -30,7 +30,7 @@ export function withAuth(handler: Handler) {
     if (!ctx) return err(401, "UNAUTHORIZED", "Invalid or expired session", correlationId);
 
     // R1.4 — rate limit per user+org
-    const rl = checkRateLimit(`u:${ctx.userId}:${ctx.organizationId}`, path);
+    const rl = await checkRateLimit(`u:${ctx.userId}:${ctx.organizationId}`, path);
     if (!rl.ok) {
       const res = err(429, "RATE_LIMITED", "Too many requests", correlationId);
       res.headers.set("X-RateLimit-Limit", String(rl.limit));
@@ -51,7 +51,7 @@ export function withAuth(handler: Handler) {
     try {
       const res = await handler(req, ctx, correlationId);
       res.headers.set("x-correlation-id", correlationId);
-      res.headers.set("X-RateLimit-Remaining", String(rl.remaining));
+      if (rl.remaining >= 0) res.headers.set("X-RateLimit-Remaining", String(rl.remaining));
       return res;
     } catch (e) {
       if (e instanceof ForbiddenError) return err(403, "FORBIDDEN", e.message, correlationId);
