@@ -10,6 +10,14 @@
   },
   "observability": { "enabled": true },
 
+  // Non-secret settings. Secrets (DATABASE_URL, keys, tokens) are added in the
+  // dashboard as type "Secret" — those survive every deploy from GitHub.
+  "vars": {
+    "APP_URL": "https://leadraai.omar-alqaisi95.workers.dev"
+  },
+  // keep any plain variables added in the dashboard instead of wiping them on deploy
+  "keep_vars": true,
+
   // Cron Triggers — replace the Vercel crons (see worker/cloudflare.ts)
   "triggers": {
     "crons": ["* * * * *", "0 * * * *"]
