@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "leadra-ai",
+  "main": "worker/cloudflare.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": { "enabled": true },
+
+  // Cron Triggers — replace the Vercel crons (see worker/cloudflare.ts)
+  "triggers": {
+    "crons": ["* * * * *", "0 * * * *"]
+  },
+
+  // Database: by default the app connects with the DATABASE_URL secret.
+  // Optional speed-up — put PostgreSQL behind Hyperdrive (Storage & Databases →
+  // Hyperdrive in the dashboard), then uncomment this block with its ID:
+  // "hyperdrive": [
+  //   { "binding": "HYPERDRIVE", "id": "<hyperdrive-id>" }
+  // ],
+
+  // Secrets (DATABASE_URL, keys, tokens) are added in the dashboard under
+  // Settings → Variables and Secrets — never in this file.
+}

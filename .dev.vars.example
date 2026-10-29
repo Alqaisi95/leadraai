@@ -1,0 +1,6 @@
+# Copy to .dev.vars for `npm run preview` (local Workers runtime)
+DATABASE_URL=postgresql://leadra:leadra@localhost:5432/leadra
+APP_URL=http://localhost:8787
+TOKEN_ENCRYPTION_KEY=
+CRON_SECRET=
+ANTHROPIC_API_KEY=

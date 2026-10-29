@@ -1,0 +1,9 @@
+node_modules/
+.next/
+.env
+*.log
+.open-next/
+.wrangler/
+.dev.vars
+cloudflare-env.d.ts
+next-env.d.ts
