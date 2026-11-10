@@ -34,7 +34,7 @@ export const GET = withAuth(async (req, ctx) => {
   }
 
   const items = [...grouped.values()]
-    .map(g => ({ ...g, avgConf: Number((g.avgConf / g.count).toFixed(2)) }))
+    .map((g) => ({ ...g, avgConf: Number((g.avgConf / g.count).toFixed(2)) }))
     .sort((a, b) => b.count - a.count);
 
   return NextResponse.json({ periodDays: days, totalHandoffs: runs.length, items });

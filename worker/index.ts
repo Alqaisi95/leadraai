@@ -15,4 +15,7 @@ async function loop() {
   }
 }
 
-loop().catch((e) => { console.error(e); process.exit(1); });
+loop().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

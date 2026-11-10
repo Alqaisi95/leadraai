@@ -39,14 +39,21 @@ export const POST = withAuth(async (req, ctx, correlationId) => {
 
   const body = createProjectSchema.safeParse(await req.json());
   if (!body.success) {
-    return err(422, "VALIDATION", body.error.issues.map(i => i.message).join("; "), correlationId);
+    return err(422, "VALIDATION", body.error.issues.map((i) => i.message).join("; "), correlationId);
   }
 
   const project = await prisma.project.create({
     data: { ...body.data, organizationId: ctx.organizationId },
   });
 
-  await audit({ ctx, action: "project.create", entityType: "project", entityId: project.id, after: project, correlationId });
+  await audit({
+    ctx,
+    action: "project.create",
+    entityType: "project",
+    entityId: project.id,
+    after: project,
+    correlationId,
+  });
 
   return NextResponse.json(project, { status: 201 });
 });

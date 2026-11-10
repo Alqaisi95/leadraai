@@ -3,7 +3,8 @@
  * MFA hooks are stubbed for Phase 1 (required for ORG_ADMIN before launch).
  */
 import { createHash, randomBytes } from "crypto";
-import { verifyTotp } from "./totp";
+import { verifyTotp, openSecret } from "./totp";
+import { consumeRecoveryCode, remainingRecoveryCodes } from "./mfa-recovery";
 import bcrypt from "bcryptjs";
 import { prisma } from "./db";
 import type { TenantContext } from "./tenant";
@@ -20,8 +21,13 @@ function hashToken(token: string) {
 export const SESSION_COOKIE = "leadra_session";
 export const CSRF_COOKIE = "leadra_csrf";
 
-export async function login(email: string, password: string, meta: { ip?: string; userAgent?: string; totp?: string }) {
+export async function login(
+  email: string,
+  password: string,
+  meta: { ip?: string; userAgent?: string; totp?: string },
+) {
   const normalized = email.trim().toLowerCase();
+  let usedRecoveryCode = false;
 
   // temporary lockout after repeated failures
   const windowStart = new Date(Date.now() - LOCKOUT_WINDOW_MIN * 60_000);
@@ -33,7 +39,7 @@ export async function login(email: string, password: string, meta: { ip?: string
   }
 
   const user = await prisma.user.findUnique({ where: { email: normalized } });
-  const valid = user?.passwordHash ? await bcrypt.compare(password, user.passwordHash) : false;
+  const valid = user?.passwordHash ? await verifyPassword(password, user.passwordHash) : false;
 
   await prisma.loginAttempt.create({
     data: { userId: user?.id, email: normalized, success: valid, ip: meta.ip },
@@ -42,10 +48,24 @@ export async function login(email: string, password: string, meta: { ip?: string
   if (!user || !valid) return { ok: false as const, error: "INVALID_CREDENTIALS" };
 
   // R1.3 — MFA enforcement
+  //
+  // A recovery code is accepted in place of a TOTP code. Without this, losing
+  // the authenticator device locked the account permanently: a password reset
+  // does not help, because the second factor is still demanded afterwards.
+  //
+  // The TOTP code is tried first, so the ordinary path costs no extra query.
+  // A recovery code is only looked up once TOTP has failed, and spending one
+  // is what proves possession — so it is consumed here, on a request that has
+  // already presented the correct password.
   if (user.mfaEnabled) {
     if (!meta.totp) return { ok: false as const, error: "MFA_REQUIRED" };
-    if (!user.mfaSecret || !verifyTotp(user.mfaSecret, meta.totp)) {
-      return { ok: false as const, error: "MFA_INVALID" };
+
+    const secret = user.mfaSecret ? openSecret(user.mfaSecret) : null;
+    const totpOk = !!secret && verifyTotp(secret, meta.totp);
+    if (!totpOk) {
+      const recovered = await consumeRecoveryCode(user.id, meta.totp);
+      if (!recovered) return { ok: false as const, error: "MFA_INVALID" };
+      usedRecoveryCode = true;
     }
   }
 
@@ -61,7 +81,12 @@ export async function login(email: string, password: string, meta: { ip?: string
     },
   });
 
-  return { ok: true as const, token, csrf, userId: user.id };
+  // Reported so the sign-in response can warn that a code was spent and say
+  // how many are left — a silent recovery login is how someone ends up with
+  // zero codes and no idea.
+  const recoveryCodesRemaining = usedRecoveryCode ? await remainingRecoveryCodes(user.id) : undefined;
+
+  return { ok: true as const, token, csrf, userId: user.id, usedRecoveryCode, recoveryCodesRemaining };
 }
 
 export async function revokeAllSessions(userId: string) {
@@ -75,7 +100,10 @@ export async function revokeAllSessions(userId: string) {
  * Resolve session token + org header into a TenantContext.
  * Every API route calls this first.
  */
-export async function resolveContext(token: string | null, organizationId: string | null): Promise<TenantContext | null> {
+export async function resolveContext(
+  token: string | null,
+  organizationId: string | null,
+): Promise<TenantContext | null> {
   if (!token || !organizationId) return null;
 
   const session = await prisma.session.findUnique({
@@ -103,4 +131,9 @@ export async function resolveContext(token: string | null, organizationId: strin
 
 export async function hashPassword(plain: string) {
   return bcrypt.hash(plain, 12);
+}
+
+/** Counterpart to hashPassword, so callers never reach for bcrypt directly. */
+export async function verifyPassword(plain: string, hash: string) {
+  return bcrypt.compare(plain, hash);
 }

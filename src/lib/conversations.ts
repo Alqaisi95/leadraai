@@ -9,8 +9,13 @@ import { TenantMismatchError } from "./tenant";
 import { audit } from "./audit";
 
 type ConvStatus =
-  | "AI_ACTIVE" | "NEEDS_HUMAN" | "ASSIGNED_TO_AGENT"
-  | "AGENT_ACTIVE" | "FOLLOW_UP_PENDING" | "CLOSED" | "SPAM";
+  | "AI_ACTIVE"
+  | "NEEDS_HUMAN"
+  | "ASSIGNED_TO_AGENT"
+  | "AGENT_ACTIVE"
+  | "FOLLOW_UP_PENDING"
+  | "CLOSED"
+  | "SPAM";
 
 const TRANSITIONS: Record<ConvStatus, ConvStatus[]> = {
   AI_ACTIVE: ["NEEDS_HUMAN", "ASSIGNED_TO_AGENT", "AGENT_ACTIVE", "FOLLOW_UP_PENDING", "CLOSED", "SPAM"],
@@ -32,7 +37,14 @@ export async function transition(conversationId: string, to: ConvStatus, ctx?: T
   }
   const updated = await prisma.conversation.update({ where: { id: conversationId }, data: { status: to } });
   if (ctx) {
-    await audit({ ctx, action: "conversation.transition", entityType: "conversation", entityId: conversationId, before: { status: from }, after: { status: to } });
+    await audit({
+      ctx,
+      action: "conversation.transition",
+      entityType: "conversation",
+      entityId: conversationId,
+      before: { status: from },
+      after: { status: to },
+    });
   }
   return updated;
 }
@@ -49,7 +61,12 @@ export async function ingestInboundMessage(params: {
   attachments?: unknown[];
 }) {
   const conversation = await prisma.conversation.upsert({
-    where: { integrationId_externalThreadId: { integrationId: params.integrationId, externalThreadId: params.threadId } },
+    where: {
+      integrationId_externalThreadId: {
+        integrationId: params.integrationId,
+        externalThreadId: params.threadId,
+      },
+    },
     create: {
       organizationId: params.organizationId,
       integrationId: params.integrationId,

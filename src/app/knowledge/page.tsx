@@ -1,260 +1,265 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { BookOpen, Pencil, Plus, Trash2 } from "lucide-react";
 import Shell from "@/components/Shell";
-import { Modal, Field, Notice, dateTime } from "@/components/ui";
+import { Card } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
+import { Badge } from "@/components/ui/Badge";
+import { Dialog } from "@/components/ui/Dialog";
+import { Field, Input, Select, Textarea } from "@/components/ui/Input";
+import { EmptyState, PageTitle, Skeleton } from "@/components/ui/Empty";
+import { useToast } from "@/components/ui/Toast";
 import { api } from "@/lib/client";
 
-const TYPE_LABEL: Record<string, string> = { PDF: "PDF", DOCX: "Word", CSV: "CSV", TEXT: "نص", URL: "رابط", XLSX: "Excel" };
-const STATUS_LABEL: Record<string, string> = { ACTIVE: "مفعّل", DISABLED: "معطّل", PROCESSING: "قيد المعالجة", FAILED: "فشل" };
+const STATUS: Record<string, { label: string; tone: "primary" | "warn" | "danger" | "neutral" }> = {
+  ACTIVE: { label: "مفهرس", tone: "primary" },
+  PROCESSING: { label: "قيد المعالجة", tone: "warn" },
+  FAILED: { label: "فشل", tone: "danger" },
+  ARCHIVED: { label: "مؤرشف", tone: "neutral" },
+};
 
 export default function KnowledgePage() {
-  const [items, setItems] = useState<any[]>([]);
+  const [items, setItems] = useState<any[] | null>(null);
   const [projects, setProjects] = useState<any[]>([]);
-  const [error, setError] = useState("");
-  const [msg, setMsg] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [viewing, setViewing] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState<any>({ type: "TEXT" });
+  const [busy, setBusy] = useState(false);
+  const [edit, setEdit] = useState<any>(null);
+  const toast = useToast();
 
-  const load = useCallback(async () => {
-    const [k, p] = await Promise.all([api("/api/knowledge-sources"), api("/api/projects?pageSize=100")]);
-    setItems(k.items);
-    setProjects(p.items);
+  const load = () =>
+    api("/api/knowledge-sources")
+      .then((d) => setItems(d.items))
+      .catch(() => setItems([]));
+  useEffect(() => {
+    load();
+    api("/api/projects")
+      .then((d) => setProjects(d.items))
+      .catch(() => {});
   }, []);
-  useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
+
+  async function create() {
+    setBusy(true);
+    try {
+      const res = await api("/api/knowledge-sources", {
+        method: "POST",
+        body: JSON.stringify({
+          title: form.title,
+          type: form.type,
+          content: form.content,
+          projectId: form.projectId || undefined,
+        }),
+      });
+      toast("success", `تمت الفهرسة — ${res.chunks} مقطع`);
+      setOpen(false);
+      setForm({ type: "TEXT" });
+      load();
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openEdit(s: any) {
+    setEdit({ ...s, content: "", loading: true });
+    try {
+      const d = await api(`/api/knowledge-sources/${s.id}`);
+      setEdit({ ...s, content: d.content, loading: false });
+    } catch (e: any) {
+      toast("error", e.message);
+      setEdit(null);
+    }
+  }
+
+  async function saveEdit() {
+    if (!edit) return;
+    setBusy(true);
+    try {
+      const res = await api(`/api/knowledge-sources/${edit.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: edit.title, content: edit.content }),
+      });
+      toast("success", `أُعيدت الفهرسة — ${res.chunks} مقطع`);
+      setEdit(null);
+      load();
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeSource() {
+    if (!edit) return;
+    setBusy(true);
+    try {
+      await api(`/api/knowledge-sources/${edit.id}`, { method: "DELETE" });
+      toast("success", "حُذف المصدر");
+      setEdit(null);
+      load();
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <Shell>
-      <div className="toolbar">
-        <h1 className="page-title">قاعدة المعرفة</h1>
-        <button className="btn" onClick={() => setAdding(true)}>إضافة مصدر</button>
-      </div>
-      <p className="muted small" style={{ marginBottom: 14 }}>
-        ما تضيفه هنا يستخدمه الذكاء الاصطناعي للرد على العملاء: كتيّبات المشاريع، خطط الدفع، الأسئلة الشائعة. الأسعار وتوفّر الوحدات تُقرأ من شاشة المخزون فقط، لا من هذه الملفات.
+      <PageTitle
+        actions={
+          <Button onClick={() => setOpen(true)}>
+            <Plus size={14} /> مصدر معرفة
+          </Button>
+        }
+      >
+        معرفة الذكاء الاصطناعي
+      </PageTitle>
+      <p className="-mt-3 mb-4 text-[12.5px] text-dim">
+        ما تضيفه هنا يستخدمه المساعد للإجابة على عملائك. الأسعار والتوفر تبقى من المخزون فقط — لا من هذه
+        النصوص.
       </p>
-      <Notice kind="err">{error}</Notice>
-      <Notice kind="ok">{msg}</Notice>
 
-      <SearchTester projects={projects} />
-
-      <div className="table-wrap" style={{ marginTop: 16 }}>
-        {items.length === 0 ? <div className="empty">لا توجد مصادر بعد. ارفع كتيّب مشروع أو الصق أسئلة شائعة.</div> : (
-          <table className="data">
-            <thead><tr><th>العنوان</th><th>النوع</th><th>المشروع</th><th>المقاطع</th><th>النسخة</th><th>الحالة</th><th>أُضيف</th></tr></thead>
-            <tbody>
-              {items.map((s) => (
-                <tr key={s.id} className="clickable" onClick={() => setViewing(s.id)}>
-                  <td style={{ fontWeight: 600 }}>{s.title}</td>
-                  <td>{TYPE_LABEL[s.type] ?? s.type}</td>
-                  <td>{s.project?.name ?? "كل المشاريع"}</td>
-                  <td>{s._count?.documents ?? 0}</td>
-                  <td>{s.version}</td>
-                  <td><span className={`chip ${s.status === "ACTIVE" ? "member-ACTIVE" : "member-SUSPENDED"}`}>{STATUS_LABEL[s.status] ?? s.status}</span></td>
-                  <td className="small muted">{dateTime(s.createdAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {adding && (
-        <AddSourceModal projects={projects} onClose={() => setAdding(false)}
-          onSaved={async (r) => { setAdding(false); setMsg(`أُضيف «${r.title}» — ${r.chunks} مقطعاً جاهزاً للذكاء الاصطناعي`); await load(); }} />
+      {!items && <Skeleton className="h-32" />}
+      {items?.length === 0 && (
+        <EmptyState
+          icon={<BookOpen size={20} />}
+          title="لا مصادر معرفة"
+          hint="أضف دليل المشروع، الأسئلة الشائعة، أو سياسات الدفع — كل ما تريد أن يعرفه المساعد."
+          action={<Button onClick={() => setOpen(true)}>إضافة أول مصدر</Button>}
+        />
       )}
-      {viewing && (
-        <SourceModal id={viewing} projects={projects} onClose={() => setViewing(null)}
-          onChanged={async (m) => { setMsg(m); await load(); }} />
-      )}
-    </Shell>
-  );
-}
 
-function SearchTester({ projects }: { projects: any[] }) {
-  const [q, setQ] = useState("");
-  const [projectId, setProjectId] = useState("");
-  const [results, setResults] = useState<any[] | null>(null);
-  const [error, setError] = useState("");
-
-  async function run() {
-    setError("");
-    try {
-      const params = new URLSearchParams({ q });
-      if (projectId) params.set("projectId", projectId);
-      setResults((await api(`/api/knowledge-sources/search?${params}`)).items);
-    } catch (e: any) { setError(e.message); }
-  }
-
-  return (
-    <div className="card">
-      <div className="section-title">جرّب سؤال عميل</div>
-      <div className="row">
-        <input className="input" style={{ flex: 1, minWidth: 200 }} placeholder="مثال: شنو خطة الدفع لشقق برج A؟" value={q}
-          onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && q.trim().length > 1 && run()} />
-        <select className="input" style={{ width: "auto" }} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-          <option value="">كل المشاريع</option>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        <button className="btn" disabled={q.trim().length < 2} onClick={run}>بحث</button>
-      </div>
-      <Notice kind="err">{error}</Notice>
-      {results && (
-        <div className="stack" style={{ marginTop: 12 }}>
-          {results.length === 0
-            ? <p className="muted small">لم يجد الذكاء الاصطناعي شيئاً — سيحوّل هذا السؤال لموظف. أضف مصدراً يغطيه.</p>
-            : results.map((r, i) => (
-              <div key={i} className="timeline">
-                <div className="item">
-                  <div className="small muted">من: {r.sourceTitle}</div>
-                  <div className="small" style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{r.content.slice(0, 400)}{r.content.length > 400 ? "…" : ""}</div>
-                </div>
+      <div className="grid gap-2.5">
+        {items?.map((s) => (
+          <Card key={s.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
+            <div>
+              <div className="text-[14px] font-bold">{s.title}</div>
+              <div className="mt-0.5 text-[12px] text-dim">
+                {s._count.documents} مقطع · {s.type}
+                {s.project?.name && ` · ${s.project.name}`}
+                {` · ${new Date(s.createdAt).toLocaleDateString("ar-IQ")}`}
               </div>
-            ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AddSourceModal({ projects, onClose, onSaved }: { projects: any[]; onClose: () => void; onSaved: (r: any) => void }) {
-  const [mode, setMode] = useState<"file" | "text">("file");
-  const [file, setFile] = useState<File | null>(null);
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
-  const [projectId, setProjectId] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function save() {
-    setError(""); setBusy(true);
-    try {
-      let r;
-      if (mode === "file") {
-        const form = new FormData();
-        form.set("file", file!);
-        if (title) form.set("title", title);
-        if (projectId) form.set("projectId", projectId);
-        r = await api("/api/knowledge-sources", { method: "POST", body: form });
-      } else {
-        r = await api("/api/knowledge-sources", {
-          method: "POST",
-          body: JSON.stringify({ title, type: "TEXT", content, ...(projectId ? { projectId } : {}) }),
-        });
-      }
-      onSaved(r);
-    } catch (e: any) { setError(e.message); }
-    finally { setBusy(false); }
-  }
-
-  const ready = mode === "file" ? !!file : title.trim().length >= 2 && content.trim().length >= 10;
-
-  return (
-    <Modal title="إضافة مصدر معرفة" onClose={onClose}>
-      <div className="tabs">
-        <button className={`tab ${mode === "file" ? "active" : ""}`} onClick={() => setMode("file")}>رفع ملف</button>
-        <button className={`tab ${mode === "text" ? "active" : ""}`} onClick={() => setMode("text")}>لصق نص</button>
+            </div>
+            <div className="flex items-center gap-2.5">
+              <Badge tone={STATUS[s.status]?.tone ?? "neutral"}>{STATUS[s.status]?.label ?? s.status}</Badge>
+              <Button size="sm" variant="outline" onClick={() => openEdit(s)}>
+                <Pencil size={12} /> تعديل
+              </Button>
+            </div>
+          </Card>
+        ))}
       </div>
-      <div className="stack">
-        {mode === "file" ? (
-          <Field label="الملف (PDF، Word، TXT، CSV — حتى 10MB)">
-            <input type="file" accept=".pdf,.docx,.txt,.md,.csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          </Field>
-        ) : null}
-        <Field label={mode === "file" ? "العنوان (اختياري — يُؤخذ من اسم الملف)" : "العنوان *"}>
-          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
-        </Field>
-        {mode === "text" && (
-          <Field label="النص *"><textarea className="input" style={{ minHeight: 180 }} value={content} onChange={(e) => setContent(e.target.value)} /></Field>
+
+      <Dialog
+        open={edit !== null}
+        onClose={() => setEdit(null)}
+        title="تعديل مصدر المعرفة"
+        footer={
+          <>
+            <Button variant="danger" loading={busy} onClick={removeSource} className="me-auto">
+              <Trash2 size={13} /> حذف
+            </Button>
+            <Button variant="outline" onClick={() => setEdit(null)}>
+              إلغاء
+            </Button>
+            <Button
+              loading={busy}
+              disabled={edit?.loading || (edit?.content ?? "").length < 10}
+              onClick={saveEdit}
+            >
+              حفظ وإعادة الفهرسة
+            </Button>
+          </>
+        }
+      >
+        {edit?.loading ? (
+          <Skeleton className="h-40" />
+        ) : (
+          edit && (
+            <div className="grid gap-3">
+              <Field label="العنوان">
+                <Input
+                  value={edit.title ?? ""}
+                  onChange={(e) => setEdit({ ...edit, title: e.target.value })}
+                />
+              </Field>
+              <Field label="المحتوى">
+                <Textarea
+                  className="min-h-48"
+                  value={edit.content ?? ""}
+                  onChange={(e) => setEdit({ ...edit, content: e.target.value })}
+                />
+              </Field>
+              <p className="text-[11.5px] leading-relaxed text-dim">
+                الحفظ يستبدل المقاطع القديمة بالكامل — المقاطع السابقة هي ما يقتبسه المساعد الآن، فتركها يبقي
+                معلومات قديمة قيد الاستخدام.
+              </p>
+            </div>
+          )
         )}
-        <Field label="يخص مشروعاً محدداً؟">
-          <select className="input" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-            <option value="">لا — يُستخدم لكل المشاريع</option>
-            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </Field>
-      </div>
-      <Notice kind="err">{error}</Notice>
-      <div className="form-actions">
-        <button className="btn" disabled={!ready || busy} onClick={save}>{busy ? "جارٍ المعالجة…" : "إضافة"}</button>
-        <button className="btn plain" onClick={onClose}>إلغاء</button>
-      </div>
-    </Modal>
-  );
-}
+      </Dialog>
 
-function SourceModal({ id, projects, onClose, onChanged }: { id: string; projects: any[]; onClose: () => void; onChanged: (msg: string) => void }) {
-  const [source, setSource] = useState<any>(null);
-  const [editing, setEditing] = useState(false);
-  const [content, setContent] = useState("");
-  const [error, setError] = useState("");
-
-  const load = useCallback(async () => setSource(await api(`/api/knowledge-sources/${id}`)), [id]);
-  useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
-
-  async function patch(body: any, message: string) {
-    setError("");
-    try {
-      await api(`/api/knowledge-sources/${id}`, { method: "PATCH", body: JSON.stringify(body) });
-      await load();
-      onChanged(message);
-    } catch (e: any) { setError(e.message); }
-  }
-
-  async function remove() {
-    if (!confirm(`حذف «${source.title}» نهائياً؟ لن يستخدمه الذكاء الاصطناعي بعد الآن.`)) return;
-    try {
-      await api(`/api/knowledge-sources/${id}`, { method: "DELETE" });
-      onChanged("تم حذف المصدر");
-      onClose();
-    } catch (e: any) { setError(e.message); }
-  }
-
-  if (!source) return <Modal title="جارٍ التحميل…" onClose={onClose}><Notice kind="err">{error}</Notice></Modal>;
-
-  return (
-    <Modal title={source.title} onClose={onClose}>
-      <div className="row" style={{ marginBottom: 12 }}>
-        <span className={`chip ${source.status === "ACTIVE" ? "member-ACTIVE" : "member-SUSPENDED"}`}>{STATUS_LABEL[source.status]}</span>
-        <span className="chip">نسخة {source.version}</span>
-        <span className="chip">{source.documents.length} مقطعاً</span>
-        <select className="input sm" style={{ width: "auto" }} value={source.projectId ?? ""}
-          onChange={(e) => patch({ projectId: e.target.value || null }, "تم تغيير المشروع")}>
-          <option value="">كل المشاريع</option>
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-      </div>
-      <Notice kind="err">{error}</Notice>
-
-      {editing ? (
-        <div className="stack">
-          <Field label="المحتوى الجديد (يستبدل القديم وينشئ نسخة جديدة)">
-            <textarea className="input" style={{ minHeight: 220 }} value={content} onChange={(e) => setContent(e.target.value)} />
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        title="مصدر معرفة جديد"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              إلغاء
+            </Button>
+            <Button
+              loading={busy}
+              disabled={!form.title || (form.content ?? "").length < 10}
+              onClick={create}
+            >
+              فهرسة
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-3">
+          <Field label="العنوان">
+            <Input
+              value={form.title ?? ""}
+              onChange={(e) => setForm({ ...form, title: e.target.value })}
+              placeholder="دليل مجمع الياسمين"
+              autoFocus
+            />
           </Field>
-          <div className="form-actions">
-            <button className="btn" disabled={content.trim().length < 10}
-              onClick={async () => { await patch({ content }, "تم تحديث المحتوى"); setEditing(false); }}>حفظ نسخة جديدة</button>
-            <button className="btn plain" onClick={() => setEditing(false)}>إلغاء</button>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="النوع">
+              <Select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+                <option value="TEXT">نص</option>
+                <option value="URL">رابط</option>
+              </Select>
+            </Field>
+            <Field label="المشروع (اختياري)">
+              <Select
+                value={form.projectId ?? ""}
+                onChange={(e) => setForm({ ...form, projectId: e.target.value })}
+              >
+                <option value="">كل المشاريع</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
           </div>
+          <Field label="المحتوى">
+            <Textarea
+              className="min-h-40"
+              value={form.content ?? ""}
+              onChange={(e) => setForm({ ...form, content: e.target.value })}
+              placeholder="مواصفات المشروع، خطط الدفع، المرافق، الأسئلة الشائعة…"
+            />
+          </Field>
         </div>
-      ) : (
-        <>
-          <div className="section-title">ما يقرؤه الذكاء الاصطناعي</div>
-          <div style={{ maxHeight: 340, overflowY: "auto" }} className="stack">
-            {source.documents.map((d: any) => (
-              <div key={d.id} className="timeline"><div className="item">
-                <div className="small muted">مقطع {d.chunkIndex + 1}</div>
-                <div className="small" style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>{d.content}</div>
-              </div></div>
-            ))}
-          </div>
-          <div className="form-actions">
-            {source.status === "ACTIVE"
-              ? <button className="btn plain" onClick={() => patch({ status: "DISABLED" }, "عُطّل المصدر — لن يستخدمه الذكاء الاصطناعي")}>تعطيل</button>
-              : <button className="btn" onClick={() => patch({ status: "ACTIVE" }, "فُعّل المصدر")}>تفعيل</button>}
-            <button className="btn plain" onClick={() => { setContent(source.documents.map((d: any) => d.content).join("\n\n")); setEditing(true); }}>تعديل المحتوى</button>
-            <button className="btn ghost danger" onClick={remove}>حذف</button>
-          </div>
-        </>
-      )}
-    </Modal>
+      </Dialog>
+    </Shell>
   );
 }

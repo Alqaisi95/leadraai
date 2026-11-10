@@ -1,120 +1,160 @@
-/**
- * GET   /api/leads/:id — everything about one lead: details, conversation,
- *       score history with reasons, opportunity stage, notes, tasks, appointments.
- * PATCH /api/leads/:id — edit details; reassign owner needs leads.assign.
- * Agents only see and edit their own leads.
- */
+/** Full lead profile: identity, deal, score history, notes, tasks & appointments. */
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { withAuth, err } from "@/lib/api";
-import { requirePermission, hasPermission } from "@/lib/rbac";
-import { TenantMismatchError, type TenantContext } from "@/lib/tenant";
+import { requirePermission } from "@/lib/rbac";
+import { TenantMismatchError } from "@/lib/tenant";
 import { audit } from "@/lib/audit";
 import { applyScoringEvent } from "@/lib/scoring";
+import { findDuplicateCandidates } from "@/lib/leads";
 
-function idFrom(url: string) {
-  return new URL(url).pathname.split("/").at(-1)!;
+function idFrom(pathname: string) {
+  return pathname.split("/").at(-1)!;
 }
 
-async function loadLead(id: string, ctx: TenantContext) {
-  const lead = await prisma.lead.findFirst({
-    where: { id, organizationId: ctx.organizationId, ...(ctx.role === "AGENT" ? { ownerMemberId: ctx.memberId } : {}) },
-  });
-  if (!lead) throw new TenantMismatchError();
-  return lead;
+/** An AGENT is scoped to their own book; everyone else sees the whole org. */
+function visibility(ctx: { role: string; memberId: string; organizationId: string }, id: string) {
+  return {
+    id,
+    organizationId: ctx.organizationId,
+    ...(ctx.role === "AGENT" ? { ownerMemberId: ctx.memberId } : {}),
+  };
 }
 
 export const GET = withAuth(async (req, ctx) => {
   requirePermission(ctx.role, "leads.read");
-  const { id } = await loadLead(idFrom(req.url), ctx);
+  const id = idFrom(req.nextUrl.pathname);
 
-  const lead = await prisma.lead.findUniqueOrThrow({
-    where: { id },
+  const lead = await prisma.lead.findFirst({
+    where: visibility(ctx, id),
     include: {
       interestedProject: { select: { id: true, name: true } },
-      campaign: { select: { id: true, name: true } },
+      campaign: { select: { name: true } },
       owner: { select: { id: true, user: { select: { fullName: true } } } },
+      conversation: { select: { id: true, status: true, lastMessageAt: true } },
+      opportunities: {
+        where: { archivedAt: null },
+        include: { stage: { select: { id: true, name: true, isWon: true, isLost: true } } },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
       scoreEvents: { orderBy: { createdAt: "desc" }, take: 30 },
       notes: { orderBy: { createdAt: "desc" }, take: 50 },
-      tasks: { orderBy: [{ status: "asc" }, { dueAt: "asc" }], take: 50 },
-      appointments: { orderBy: { startsAt: "desc" }, take: 20, include: { project: { select: { name: true } } } },
-      opportunities: { where: { archivedAt: null }, include: { stage: { select: { name: true, isWon: true, isLost: true } } } },
-      tags: { include: { tag: true } },
-      conversation: {
-        select: {
-          id: true, status: true, customerUsername: true, lastMessageAt: true,
-          messages: { orderBy: { createdAt: "desc" }, take: 60, select: { id: true, senderType: true, body: true, createdAt: true } },
-        },
+      tasks: {
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        include: { assignee: { select: { user: { select: { fullName: true } } } } },
       },
+      appointments: {
+        orderBy: { startsAt: "desc" },
+        take: 20,
+        include: { member: { select: { user: { select: { fullName: true } } } } },
+      },
+      tags: { include: { tag: true } },
+      identifiers: true,
     },
   });
+  if (!lead) throw new TenantMismatchError();
 
-  // note authors: one query instead of a relation per note
-  const authorIds = [...new Set(lead.notes.map((n: any) => n.authorMemberId))];
-  const authors = authorIds.length
-    ? await prisma.organizationMember.findMany({ where: { id: { in: authorIds } }, select: { id: true, user: { select: { fullName: true } } } })
-    : [];
-  const authorName = Object.fromEntries(authors.map((a: any) => [a.id, a.user.fullName]));
+  // resolve note authors in one round-trip
+  const authorIds = [...new Set(lead.notes.map((n) => n.authorMemberId))];
+  const authors = await prisma.organizationMember.findMany({
+    where: { id: { in: authorIds } },
+    select: { id: true, user: { select: { fullName: true } } },
+  });
+  const nameByMember = new Map(authors.map((a) => [a.id, a.user.fullName]));
+
+  const duplicates = await findDuplicateCandidates(ctx.organizationId, lead.id).catch(() => []);
 
   return NextResponse.json({
-    ...lead,
-    notes: lead.notes.map((n: any) => ({ ...n, authorName: authorName[n.authorMemberId] ?? "—" })),
-    conversation: lead.conversation ? { ...lead.conversation, messages: [...lead.conversation.messages].reverse() } : null,
-    canAssign: hasPermission(ctx.role, "leads.assign"),
+    lead: {
+      ...lead,
+      notes: lead.notes.map((n) => ({ ...n, author: nameByMember.get(n.authorMemberId) ?? "—" })),
+    },
+    duplicates: duplicates.map((d: any) => ({ ...d.lead, matchedOn: d.kind })),
   });
 });
 
-const optionalText = (max: number) => z.string().trim().max(max).nullable().optional();
 const patchSchema = z.object({
-  fullName: optionalText(120),
-  phone: optionalText(30),
-  email: z.string().trim().email().nullable().optional().or(z.literal("").transform(() => null)),
-  purpose: z.enum(["BUY", "INVEST", "RENT", "UNKNOWN"]).optional(),
-  city: optionalText(80),
-  area: optionalText(120),
-  propertyType: optionalText(60),
-  budgetMin: z.number().nonnegative().nullable().optional(),
-  budgetMax: z.number().nonnegative().nullable().optional(),
-  paymentMethod: optionalText(60),
-  buyTimeframe: optionalText(60),
-  nextStep: optionalText(300),
-  interestedProjectId: z.string().nullable().optional(),
-  ownerMemberId: z.string().nullable().optional(),
+  fullName: z.string().min(2).max(120).nullish(),
+  phone: z.string().max(30).nullish(),
+  email: z.string().email().nullish().or(z.literal("")),
+  purpose: z.enum(["BUY", "RENT", "INVEST", "UNKNOWN"]).optional(),
+  city: z.string().max(100).nullish(),
+  area: z.string().max(100).nullish(),
+  propertyType: z.string().max(100).nullish(),
+  budgetMin: z.number().nonnegative().nullish(),
+  budgetMax: z.number().nonnegative().nullish(),
+  paymentMethod: z.string().max(100).nullish(),
+  buyTimeframe: z.string().max(100).nullish(),
+  nextStep: z.string().max(300).nullish(),
+  interestedProjectId: z.string().nullish(),
+  ownerMemberId: z.string().nullish(),
+  marketingConsent: z.boolean().optional(),
 });
 
 export const PATCH = withAuth(async (req, ctx, correlationId) => {
   requirePermission(ctx.role, "leads.update");
-  const lead = await loadLead(idFrom(req.url), ctx);
-  const body = patchSchema.safeParse(await req.json());
-  if (!body.success) return err(422, "VALIDATION", body.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "), correlationId);
-  const data: Record<string, unknown> = { ...body.data };
-  for (const k of Object.keys(data)) if (data[k] === "") data[k] = null;
+  const id = idFrom(req.nextUrl.pathname);
 
-  if (data.ownerMemberId !== undefined && data.ownerMemberId !== lead.ownerMemberId) {
+  const body = patchSchema.safeParse(await req.json().catch(() => ({})));
+  if (!body.success)
+    return err(422, "VALIDATION", body.error.issues.map((i) => i.message).join("; "), correlationId);
+
+  const lead = await prisma.lead.findFirst({ where: visibility(ctx, id) });
+  if (!lead) throw new TenantMismatchError();
+
+  const d = body.data;
+  // reassigning someone else's lead is a manager action
+  if (d.ownerMemberId !== undefined && d.ownerMemberId !== lead.ownerMemberId) {
     requirePermission(ctx.role, "leads.assign");
-    if (data.ownerMemberId) {
-      const owner = await prisma.organizationMember.findFirst({
-        where: { id: data.ownerMemberId as string, organizationId: ctx.organizationId, status: "ACTIVE" },
+    if (d.ownerMemberId) {
+      const member = await prisma.organizationMember.findFirst({
+        where: { id: d.ownerMemberId, organizationId: ctx.organizationId, status: "ACTIVE" },
       });
-      if (!owner) return err(404, "NOT_FOUND", "Member not found", correlationId);
+      if (!member) return err(422, "VALIDATION", "الموظف غير موجود أو غير نشط", correlationId);
     }
   }
-  if (data.interestedProjectId) {
-    const project = await prisma.project.findFirst({ where: { id: data.interestedProjectId as string, organizationId: ctx.organizationId } });
-    if (!project) return err(404, "NOT_FOUND", "Project not found", correlationId);
-  }
-  if (data.budgetMin != null && data.budgetMax != null && (data.budgetMin as number) > (data.budgetMax as number)) {
+
+  const min = d.budgetMin !== undefined ? d.budgetMin : lead.budgetMin ? Number(lead.budgetMin) : null;
+  const max = d.budgetMax !== undefined ? d.budgetMax : lead.budgetMax ? Number(lead.budgetMax) : null;
+  if (min != null && max != null && min > max) {
     return err(422, "VALIDATION", "الحد الأدنى للميزانية أكبر من الأعلى", correlationId);
   }
 
-  const updated = await prisma.lead.update({ where: { id: lead.id }, data });
+  // only send defined keys through; `null` clears a field intentionally
+  const data = Object.fromEntries(Object.entries(d).filter(([, v]) => v !== undefined)) as any;
+  if (data.email === "") data.email = null;
 
-  // Details entered by staff count the same as details the customer gave the AI (one-time events).
-  if (!lead.phone && updated.phone) await applyScoringEvent(lead.id, "PHONE_SHARED");
-  if (!lead.budgetMax && !lead.budgetMin && (updated.budgetMax || updated.budgetMin)) await applyScoringEvent(lead.id, "BUDGET_PROVIDED");
-  if (!lead.area && updated.area) await applyScoringEvent(lead.id, "AREA_PROVIDED");
+  const updated = await prisma.lead.update({
+    where: { id: lead.id },
+    data: { ...data, lastInteractionAt: new Date() },
+    include: { owner: { select: { user: { select: { fullName: true } } } } },
+  });
 
-  await audit({ ctx, action: "lead.update", entityType: "lead", entityId: lead.id, before: lead, after: updated, correlationId });
-  return NextResponse.json(await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } }));
+  // newly-learned facts still earn their score, whoever entered them
+  if (!lead.phone && updated.phone) {
+    await prisma.leadIdentifier
+      .create({ data: { leadId: lead.id, kind: "phone", value: updated.phone } })
+      .catch(() => {});
+    await applyScoringEvent(lead.id, "PHONE_SHARED");
+  }
+  if (!lead.area && !lead.city && (updated.area || updated.city))
+    await applyScoringEvent(lead.id, "AREA_PROVIDED");
+  if (!lead.budgetMin && !lead.budgetMax && (updated.budgetMin || updated.budgetMax)) {
+    await applyScoringEvent(lead.id, "BUDGET_PROVIDED");
+  }
+
+  await audit({
+    ctx,
+    action: "lead.update",
+    entityType: "lead",
+    entityId: lead.id,
+    before: lead,
+    after: updated,
+    correlationId,
+  });
+
+  return NextResponse.json(updated);
 });

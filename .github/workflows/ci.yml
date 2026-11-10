@@ -15,6 +15,9 @@ jobs:
           --health-cmd "pg_isready -U test" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       DATABASE_URL: postgresql://test:test@localhost:5432/leadra_test
+      # schema.prisma declares directUrl, and Prisma will not load its config
+      # without it. CI talks to Postgres directly, so both point at the same place.
+      DIRECT_URL: postgresql://test:test@localhost:5432/leadra_test
       TEST_DATABASE_URL: postgresql://test:test@localhost:5432/leadra_test
       TOKEN_ENCRYPTION_KEY: dGVzdF9rZXlfMzJfYnl0ZXNfZm9yX2NpX29ubHkhIQ==
     steps:
@@ -24,5 +27,43 @@ jobs:
       - run: npm ci
       - run: npx prisma migrate deploy
       - run: npx tsc --noEmit
-      - run: npx opennextjs-cloudflare build   # the Workers bundle must build
-      - run: npm test          # unit + isolation (DB available) — merge blocked on failure
+      - run: npm run lint
+      # Reports advisories in shipped dependencies. Not blocking yet: Next 14.2
+      # has no patched release and closing its advisories needs a major upgrade
+      # (tracked separately). A gate that is red on day one gets ignored, so
+      # this flips to blocking the moment that upgrade lands.
+      - run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true
+      - run: npm test # unit + isolation (DB available) — merge blocked on failure
+      - run: npx next build
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: test, POSTGRES_PASSWORD: test, POSTGRES_DB: leadra_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U test" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://test:test@localhost:5432/leadra_test
+      DIRECT_URL: postgresql://test:test@localhost:5432/leadra_test
+      TOKEN_ENCRYPTION_KEY: dGVzdF9rZXlfMzJfYnl0ZXNfZm9yX2NpX29ubHkhIQ==
+      CRON_SECRET: ci-only-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npx prisma migrate deploy
+      - run: npm run db:seed # E2E asserts against the demo org
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

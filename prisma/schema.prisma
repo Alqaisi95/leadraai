@@ -4,13 +4,21 @@
 // ============================================================
 
 generator client {
-  provider      = "prisma-client-js"
+  provider = "prisma-client-js"
+  // The Workers runtime has no filesystem to load a query-engine binary from,
+  // so Postgres is reached through the pg driver adapter instead. See db.ts.
   previewFeatures = ["driverAdapters"]
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // Runtime goes through PgBouncer: every serverless instance opens its own
+  // Prisma pool, and against the direct endpoint enough of them exhaust
+  // Postgres before any of them is slow enough to notice.
+  url       = env("DATABASE_URL")
+  // Migrations and introspection need a real session, which the pooler in
+  // transaction mode cannot give them.
+  directUrl = env("DIRECT_URL")
 }
 
 // ---------- Enums ----------
@@ -22,12 +30,12 @@ enum OrgStatus {
 }
 
 enum RoleKey {
-  SUPER_ADMIN     // منصة Leadra نفسها
-  ORG_ADMIN       // مدير الشركة
-  SALES_MANAGER   // مدير المبيعات
-  AGENT           // موظف المبيعات
-  MARKETING       // فريق التسويق
-  VIEWER          // قراءة فقط
+  SUPER_ADMIN // منصة Leadra نفسها
+  ORG_ADMIN // مدير الشركة
+  SALES_MANAGER // مدير المبيعات
+  AGENT // موظف المبيعات
+  MARKETING // فريق التسويق
+  VIEWER // قراءة فقط
 }
 
 enum MemberStatus {
@@ -167,6 +175,29 @@ enum AiRunType {
   RESPONSE
   SUMMARY
   SCORING
+  SUGGESTION
+}
+
+enum SequenceTrigger {
+  /// Lead has not replied for `triggerHours`. The only trigger in v1 — it is
+  /// the one the scoring rules already measure, and the one every operator
+  /// asks for first.
+  NO_REPLY
+}
+
+enum SequenceStepAction {
+  SEND_MESSAGE
+  CREATE_TASK
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  /// The customer replied. The only outcome that matters more than finishing.
+  STOPPED_REPLIED
+  STOPPED_MANUAL
+  /// The lead left the state the sequence was built for (won, lost, merged).
+  STOPPED_INELIGIBLE
+  COMPLETED
 }
 
 enum NotificationType {
@@ -183,6 +214,11 @@ enum NotificationType {
   META_RATE_LIMIT
   AI_FAILURE
   UNAUTHORIZED_ACCESS
+  PLAN_LIMIT_WARNING
+  PLAN_LIMIT_REACHED
+  TRIAL_ENDING
+  SUBSCRIPTION_EXPIRED
+  SEQUENCE_STEP_FAILED
 }
 
 enum SubscriptionStatus {
@@ -195,14 +231,17 @@ enum SubscriptionStatus {
 // ---------- Tenancy & Identity ----------
 
 model Organization {
-  id        String    @id @default(cuid())
-  name      String
-  country   String?
-  timezone  String    @default("Asia/Baghdad")
-  language  Language  @default(AR)
-  status    OrgStatus @default(ACTIVE)
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id                  String    @id @default(cuid())
+  name                String
+  country             String?
+  timezone            String    @default("Asia/Baghdad")
+  language            Language  @default(AR)
+  status              OrgStatus @default(ACTIVE)
+  // First-response SLA in minutes — surfaced in team reports and breach counts.
+  // Was a hard-coded 15 in the reports route; every org needs its own target.
+  slaFirstResponseMin Int       @default(15)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   members          OrganizationMember[]
   teams            Team[]
@@ -216,6 +255,7 @@ model Organization {
   appointments     Appointment[]
   knowledgeSources KnowledgeSource[]
   auditLogs        AuditLog[]
+  cannedResponses  CannedResponse[]
   notifications    Notification[]
   subscription     Subscription?
   usageRecords     UsageRecord[]
@@ -223,47 +263,66 @@ model Organization {
   promptVersions   PromptVersion[]
   tags             Tag[]
   scoringRules     ScoringRule[]
+  sequences        Sequence[]
+  scheduledReports ScheduledReport[]
 
   @@map("organizations")
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String?
-  fullName     String
-  phone        String?
-  language     Language @default(AR)
-  isSuperAdmin Boolean  @default(false)
-  mfaEnabled   Boolean  @default(false)
-  mfaSecret    String? // encrypted at rest
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id              String    @id @default(cuid())
+  email           String    @unique
+  // Null until the address is proven. Signup does not block on it — the gate
+  // sits in front of the actions that reach other people, not the front door.
+  emailVerifiedAt DateTime?
+  passwordHash    String?
+  fullName        String
+  phone           String?
+  language        Language  @default(AR)
+  isSuperAdmin    Boolean   @default(false)
+  mfaEnabled      Boolean   @default(false)
+  mfaSecret       String? // encrypted at rest
+  mfaRecoveryCodes MfaRecoveryCode[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  memberships   OrganizationMember[]
-  sessions      Session[]
-  loginAttempts LoginAttempt[]
+  memberships        OrganizationMember[]
+  sessions           Session[]
+  loginAttempts      LoginAttempt[]
+  passwordResets     PasswordReset[]
+  emailVerifications EmailVerification[]
 
   @@map("users")
 }
 
 model OrganizationMember {
-  id             String       @id @default(cuid())
-  organizationId String
-  userId         String
-  role           RoleKey
-  status         MemberStatus @default(INVITED)
-  invitedByEmail String?
-  joinedAt       DateTime?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id                String       @id @default(cuid())
+  organizationId    String
+  userId            String
+  role              RoleKey
+  status            MemberStatus @default(INVITED)
+  invitedByEmail    String?
+  // Invitation is a hash, never the raw token — a leaked database dump must not
+  // hand out working invitations.
+  inviteTokenHash   String?      @unique
+  inviteExpiresAt   DateTime?
+  joinedAt          DateTime?
+  // Partial map of {type: {inApp, email}}. Absent types fall back to the
+  // defaults in lib/notification-prefs.ts, so a member who never touched the
+  // settings screen keeps whatever the current default is.
+  notificationPrefs Json?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
 
-  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  teamMembers   TeamMember[]
-  assignedLeads Lead[]         @relation("LeadOwner")
-  tasks         Task[]         @relation("TaskAssignee")
-  appointments  Appointment[]
+  organization          Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                  User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  teamMembers           TeamMember[]
+  assignedLeads         Lead[]             @relation("LeadOwner")
+  assignedConversations Conversation[]     @relation("ConversationAssignee")
+  tasks                 Task[]             @relation("TaskAssignee")
+  appointments          Appointment[]
+  pushSubscriptions     PushSubscription[]
+  scheduledReports      ScheduledReport[]
 
   @@unique([organizationId, userId])
   @@index([organizationId, role])
@@ -296,19 +355,203 @@ model TeamMember {
 }
 
 model Session {
-  id         String   @id @default(cuid())
-  userId     String
-  tokenHash  String   @unique
-  userAgent  String?
-  ip         String?
-  expiresAt  DateTime
-  revokedAt  DateTime?
-  createdAt  DateTime @default(now())
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@map("sessions")
+}
+
+model PasswordReset {
+  id        String    @id @default(cuid())
+  userId    String
+  // Only the hash is stored — a database dump must not hand out working reset
+  // links, exactly as with session tokens and invitations.
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  requestIp String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("password_resets")
+}
+
+/// Durable rate-limit counters for the anonymous credential endpoints.
+///
+/// The in-memory limiter in lib/ratelimit.ts lives inside one process, so on
+/// serverless the effective allowance is the configured limit multiplied by
+/// however many instances happen to be warm. That is tolerable for the ordinary
+/// API — those limits exist to stop runaway clients — and not tolerable for the
+/// endpoints that guess passwords or send mail to other people's inboxes.
+///
+/// One row per (key, window) incremented atomically, rather than a row per hit:
+/// these paths are low volume, and this keeps the cost at a single statement.
+model EmailVerification {
+  id        String    @id @default(cuid())
+  userId    String
+  // Hash only, as with every other token in this schema.
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("email_verifications")
+}
+
+/// Automated follow-up.
+///
+/// The platform already knew when a lead went cold — the NO_REPLY_48H scoring
+/// rule docks points for it every day — and had no way to act on it. Chasing
+/// was manual and depended on an agent remembering.
+model Sequence {
+  id             String          @id @default(cuid())
+  organizationId String
+  name           String
+  isActive       Boolean         @default(false)
+  trigger        SequenceTrigger @default(NO_REPLY)
+  /// Hours of silence before the first step runs.
+  triggerHours   Int             @default(48)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  steps        SequenceStep[]
+  enrollments  SequenceEnrollment[]
+
+  @@index([organizationId, isActive])
+  @@map("sequences")
+}
+
+model SequenceStep {
+  id         String             @id @default(cuid())
+  sequenceId String
+  order      Int
+  /// Hours after the previous step (or after enrolment, for the first).
+  delayHours Int                @default(0)
+  action     SequenceStepAction @default(SEND_MESSAGE)
+  /// Message body, or task title.
+  body       String
+  createdAt  DateTime           @default(now())
+
+  sequence    Sequence             @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  enrollments SequenceEnrollment[]
+
+  @@unique([sequenceId, order])
+  @@map("sequence_steps")
+}
+
+model SequenceEnrollment {
+  id            String           @id @default(cuid())
+  sequenceId    String
+  leadId        String
+  currentStepId String?
+  status        EnrollmentStatus @default(ACTIVE)
+  /// When the next step is due. The hourly job selects on this.
+  nextRunAt     DateTime?
+  lastRunAt     DateTime?
+  stoppedAt     DateTime?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  sequence    Sequence      @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  lead        Lead          @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  currentStep SequenceStep? @relation(fields: [currentStepId], references: [id], onDelete: SetNull)
+
+  /// One enrolment per lead per sequence — re-enrolling a lead that is already
+  /// being chased would double every message it receives.
+  @@unique([sequenceId, leadId])
+  @@index([status, nextRunAt])
+  @@map("sequence_enrollments")
+}
+
+/// A browser push endpoint for one member on one device.
+///
+/// Keyed by endpoint rather than by member: a person works from a phone and a
+/// desktop, and each browser issues its own subscription. The endpoint is what
+/// the push service treats as the address, so it is what must be unique.
+model PushSubscription {
+  id         String   @id @default(cuid())
+  memberId   String
+  endpoint   String   @unique
+  /// Public key and auth secret from the browser's PushSubscription. These
+  /// encrypt the payload for that device; they are not credentials of ours.
+  p256dh     String
+  auth       String
+  userAgent  String?
+  /// Bumped on every successful delivery, so a dead device is identifiable.
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  member OrganizationMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId])
+  @@map("push_subscriptions")
+}
+
+enum ReportFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+/// A report delivered on a schedule.
+///
+/// Every piece of this already existed and was simply not connected: the export
+/// endpoint generated the file, the jobs runner had scheduling, and the mailer
+/// could send. What was missing was the row that says "this report, weekly, to
+/// these people" — so an owner who does not open the platform daily never saw
+/// how their team was doing.
+model ScheduledReport {
+  id                 String          @id @default(cuid())
+  organizationId     String
+  /// Whose permissions the report is generated with. If they lose access to
+  /// the report, the schedule stops producing it — the schedule cannot become
+  /// a way to keep reading something you are no longer allowed to read.
+  createdByMemberId  String
+  report             String
+  frequency          ReportFrequency @default(WEEKLY)
+  /// Members who receive it. Ids, not addresses: an arbitrary address would
+  /// make this a data-exfiltration channel with a friendly UI.
+  recipientMemberIds String[]
+  isActive           Boolean         @default(true)
+  lastSentAt         DateTime?
+  lastError          String?
+  nextRunAt          DateTime
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    OrganizationMember @relation(fields: [createdByMemberId], references: [id], onDelete: Cascade)
+
+  @@index([isActive, nextRunAt])
+  @@index([organizationId])
+  @@map("scheduled_reports")
+}
+
+model RateLimitCounter {
+  id          String   @id @default(cuid())
+  key         String
+  windowStart DateTime
+  count       Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([key, windowStart])
+  @@index([windowStart])
+  @@map("rate_limit_counters")
 }
 
 model LoginAttempt {
@@ -332,10 +575,15 @@ model Integration {
   organizationId String
   provider       IntegrationProvider
   status         IntegrationStatus   @default(DISCONNECTED)
-  externalId     String? // e.g. Instagram Business Account ID
+  externalId     String? // Instagram Business Account ID
+  // The linked Facebook Page. Instagram DMs are sent and their webhooks are
+  // subscribed through the Page, not the IG account — so this is required for
+  // the integration to function, not merely informational.
+  pageId         String?
   displayName    String?
   lastSyncAt     DateTime?
   errorCount     Int                 @default(0)
+  lastError      String?
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 
@@ -364,16 +612,16 @@ model IntegrationToken {
 }
 
 model WebhookEvent {
-  id             String             @id @default(cuid())
-  organizationId String?
-  provider       IntegrationProvider
+  id              String              @id @default(cuid())
+  organizationId  String?
+  provider        IntegrationProvider
   externalEventId String // Meta event id — idempotency key
-  rawPayload     Json // stored before any processing
-  status         WebhookEventStatus @default(RECEIVED)
-  attempts       Int                @default(0)
-  receivedAt     DateTime           @default(now())
-  processedAt    DateTime?
-  lastError      String?
+  rawPayload      Json // stored before any processing
+  status          WebhookEventStatus  @default(RECEIVED)
+  attempts        Int                 @default(0)
+  receivedAt      DateTime            @default(now())
+  processedAt     DateTime?
+  lastError       String?
 
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
 
@@ -400,12 +648,15 @@ model Conversation {
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  integration  Integration  @relation(fields: [integrationId], references: [id], onDelete: Cascade)
-  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  messages     Message[]
-  lead         Lead?
-  aiRuns       AiRun[]
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integration    Integration         @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  campaign       Campaign?           @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  // Nulled rather than cascaded: removing a member must never delete customer
+  // conversations — the thread returns to the unassigned pool.
+  assignedMember OrganizationMember? @relation("ConversationAssignee", fields: [assignedMemberId], references: [id], onDelete: SetNull)
+  messages       Message[]
+  lead           Lead?
+  aiRuns         AiRun[]
 
   @@unique([integrationId, externalThreadId])
   @@index([organizationId, status])
@@ -438,47 +689,48 @@ model Message {
 // ---------- Leads, Scoring, CRM ----------
 
 model Lead {
-  id               String          @id @default(cuid())
-  organizationId   String
-  conversationId   String?         @unique
-  fullName         String?
-  igUsername       String?
-  phone            String?
-  email            String?
-  language         Language?
-  purpose          LeadPurpose     @default(UNKNOWN)
-  city             String?
-  area             String?
-  propertyType     String?
-  budgetMin        Decimal?        @db.Decimal(14, 2)
-  budgetMax        Decimal?        @db.Decimal(14, 2)
-  paymentMethod    String?
-  buyTimeframe     String?
+  id                  String          @id @default(cuid())
+  organizationId      String
+  conversationId      String?         @unique
+  fullName            String?
+  igUsername          String?
+  phone               String?
+  email               String?
+  language            Language?
+  purpose             LeadPurpose     @default(UNKNOWN)
+  city                String?
+  area                String?
+  propertyType        String?
+  budgetMin           Decimal?        @db.Decimal(14, 2)
+  budgetMax           Decimal?        @db.Decimal(14, 2)
+  paymentMethod       String?
+  buyTimeframe        String?
   interestedProjectId String?
-  campaignId       String?
-  ownerMemberId    String?
-  score            Int             @default(0)
-  temperature      LeadTemperature @default(COLD)
-  lastInteractionAt DateTime?
-  nextStep         String?
-  marketingConsent Boolean         @default(false)
-  mergedIntoLeadId String?
-  createdAt        DateTime        @default(now())
-  updatedAt        DateTime        @updatedAt
+  campaignId          String?
+  ownerMemberId       String?
+  score               Int             @default(0)
+  temperature         LeadTemperature @default(COLD)
+  lastInteractionAt   DateTime?
+  nextStep            String?
+  marketingConsent    Boolean         @default(false)
+  mergedIntoLeadId    String?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
 
-  organization      Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  conversation      Conversation?       @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-  interestedProject Project?            @relation(fields: [interestedProjectId], references: [id], onDelete: SetNull)
-  campaign          Campaign?           @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  owner             OrganizationMember? @relation("LeadOwner", fields: [ownerMemberId], references: [id], onDelete: SetNull)
-  identifiers       LeadIdentifier[]
-  scoreEvents       LeadScoreEvent[]
-  opportunities     Opportunity[]
-  notes             Note[]
-  tags              LeadTag[]
-  tasks             Task[]
-  appointments      Appointment[]
-  unitViews         LeadUnitView[]
+  organization        Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation        Conversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  interestedProject   Project?             @relation(fields: [interestedProjectId], references: [id], onDelete: SetNull)
+  campaign            Campaign?            @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  owner               OrganizationMember?  @relation("LeadOwner", fields: [ownerMemberId], references: [id], onDelete: SetNull)
+  identifiers         LeadIdentifier[]
+  scoreEvents         LeadScoreEvent[]
+  opportunities       Opportunity[]
+  notes               Note[]
+  tags                LeadTag[]
+  tasks               Task[]
+  appointments        Appointment[]
+  unitViews           LeadUnitView[]
+  sequenceEnrollments SequenceEnrollment[]
 
   @@index([organizationId, score])
   @@index([organizationId, phone])
@@ -503,9 +755,9 @@ model ScoringRule {
   id             String  @id @default(cuid())
   organizationId String
   projectId      String? // null = org-wide default
-  event          String  // e.g. BUDGET_PROVIDED, PHONE_SHARED, VISIT_REQUESTED
-  points         Int     // +/- 
-  label          String  // human-readable reason (AR)
+  event          String // e.g. BUDGET_PROVIDED, PHONE_SHARED, VISIT_REQUESTED
+  points         Int // +/- 
+  label          String // human-readable reason (AR)
   active         Boolean @default(true)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -516,13 +768,13 @@ model ScoringRule {
 }
 
 model LeadScoreEvent {
-  id        String   @id @default(cuid())
-  leadId    String
-  ruleEvent String
-  points    Int
-  reason    String
+  id         String   @id @default(cuid())
+  leadId     String
+  ruleEvent  String
+  points     Int
+  reason     String
   scoreAfter Int
-  createdAt DateTime @default(now())
+  createdAt  DateTime @default(now())
 
   lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
 
@@ -536,8 +788,8 @@ model Pipeline {
   name           String
   isDefault      Boolean @default(false)
 
-  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  stages       PipelineStage[]
+  organization  Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  stages        PipelineStage[]
   opportunities Opportunity[]
 
   @@index([organizationId])
@@ -552,7 +804,7 @@ model PipelineStage {
   isWon      Boolean @default(false)
   isLost     Boolean @default(false)
   // JSON rules enforced server-side before moving into this stage
-  entryRules Json?   // e.g. {"requires": ["phone", "budget"]}
+  entryRules Json? // e.g. {"requires": ["phone", "budget"]}
 
   pipeline      Pipeline      @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
   opportunities Opportunity[]
@@ -594,6 +846,24 @@ model Note {
 
   @@index([leadId])
   @@map("notes")
+}
+
+model CannedResponse {
+  id             String   @id @default(cuid())
+  organizationId String
+  title          String
+  body           String
+  // Simple usage counter so the inbox can surface what the team actually uses
+  // instead of an alphabetical list nobody scrolls.
+  useCount       Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, title])
+  @@index([organizationId, useCount])
+  @@map("canned_responses")
 }
 
 model Tag {
@@ -645,18 +915,18 @@ model Task {
 }
 
 model Appointment {
-  id             String            @id @default(cuid())
-  organizationId String
-  leadId         String
-  memberId       String
-  projectId      String?
-  startsAt       DateTime
-  endsAt         DateTime?
-  status         AppointmentStatus @default(SCHEDULED)
-  location       String?
+  id                      String            @id @default(cuid())
+  organizationId          String
+  leadId                  String
+  memberId                String
+  projectId               String?
+  startsAt                DateTime
+  endsAt                  DateTime?
+  status                  AppointmentStatus @default(SCHEDULED)
+  location                String?
   externalCalendarEventId String?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
 
   organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   lead         Lead               @relation(fields: [leadId], references: [id], onDelete: Cascade)
@@ -686,13 +956,13 @@ model Project {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
-  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  buildings    Building[]
-  units        Unit[]
-  campaigns    Campaign[]
-  leads        Lead[]
-  appointments Appointment[]
-  scoringRules ScoringRule[]
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  buildings        Building[]
+  units            Unit[]
+  campaigns        Campaign[]
+  leads            Lead[]
+  appointments     Appointment[]
+  scoringRules     ScoringRule[]
   knowledgeSources KnowledgeSource[]
 
   @@index([organizationId])
@@ -713,29 +983,29 @@ model Building {
 }
 
 model Unit {
-  id             String     @id @default(cuid())
-  organizationId String
-  projectId      String
-  buildingId     String?
-  unitNumber     String
-  floor          Int?
-  unitType       String? // شقة، فيلا، محل...
-  bedrooms       Int?
-  bathrooms      Int?
-  areaSqm        Decimal?   @db.Decimal(10, 2)
-  price          Decimal?   @db.Decimal(14, 2)
-  paymentPlan    Json?
-  status         UnitStatus @default(AVAILABLE)
-  commission     Decimal?   @db.Decimal(6, 2)
-  notes          String?
-  media          Json?
+  id              String     @id @default(cuid())
+  organizationId  String
+  projectId       String
+  buildingId      String?
+  unitNumber      String
+  floor           Int?
+  unitType        String? // شقة، فيلا، محل...
+  bedrooms        Int?
+  bathrooms       Int?
+  areaSqm         Decimal?   @db.Decimal(10, 2)
+  price           Decimal?   @db.Decimal(14, 2)
+  paymentPlan     Json?
+  status          UnitStatus @default(AVAILABLE)
+  commission      Decimal?   @db.Decimal(6, 2)
+  notes           String?
+  media           Json?
   // single source of truth for availability — AI reads ONLY from here
-  statusUpdatedAt DateTime  @default(now())
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  statusUpdatedAt DateTime   @default(now())
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
 
-  project             Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  building            Building?                @relation(fields: [buildingId], references: [id], onDelete: SetNull)
+  project             Project                   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  building            Building?                 @relation(fields: [buildingId], references: [id], onDelete: SetNull)
   priceHistory        UnitPriceHistory[]
   availabilityHistory UnitAvailabilityHistory[]
   leadViews           LeadUnitView[]
@@ -833,12 +1103,12 @@ model KnowledgeSource {
 }
 
 model KnowledgeDocument {
-  id        String @id @default(cuid())
-  sourceId  String
+  id         String @id @default(cuid())
+  sourceId   String
   chunkIndex Int
-  content   String
+  content    String
   // pgvector column added via raw migration: embedding vector(1536)
-  metadata  Json?
+  metadata   Json?
 
   source KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
 
@@ -888,16 +1158,16 @@ model AiRun {
 // ---------- Notifications, Audit, Billing ----------
 
 model Notification {
-  id             String           @id @default(cuid())
-  organizationId String
+  id                String           @id @default(cuid())
+  organizationId    String
   recipientMemberId String?
-  type           NotificationType
-  title          String
-  body           String?
-  entityType     String? // lead | conversation | task ...
-  entityId       String?
-  readAt         DateTime?
-  createdAt      DateTime         @default(now())
+  type              NotificationType
+  title             String
+  body              String?
+  entityType        String? // lead | conversation | task ...
+  entityId          String?
+  readAt            DateTime?
+  createdAt         DateTime         @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -927,15 +1197,15 @@ model AuditLog {
 }
 
 model Subscription {
-  id             String             @id @default(cuid())
-  organizationId String             @unique
-  planKey        String // starter | growth | enterprise
-  status         SubscriptionStatus @default(TRIAL)
-  trialEndsAt    DateTime?
-  limits         Json // {igAccounts, users, monthlyConversations, aiTokens, storageMb}
+  id               String             @id @default(cuid())
+  organizationId   String             @unique
+  planKey          String // starter | growth | enterprise
+  status           SubscriptionStatus @default(TRIAL)
+  trialEndsAt      DateTime?
+  limits           Json // {igAccounts, users, monthlyConversations, aiTokens, storageMb}
   currentPeriodEnd DateTime?
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -980,4 +1250,21 @@ model JobRun {
 
   @@index([name, startedAt])
   @@map("job_runs")
+}
+
+/// Single-use codes that stand in for a TOTP code when the authenticator is
+/// gone. Stored as hashes only: a database read must not yield a working
+/// second factor, which is the whole point of having one.
+model MfaRecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, codeHash])
+  @@index([userId, usedAt])
+  @@map("mfa_recovery_codes")
 }

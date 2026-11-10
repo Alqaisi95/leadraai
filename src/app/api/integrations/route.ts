@@ -11,17 +11,29 @@ export const GET = withAuth(async (_req, ctx) => {
   const items = await prisma.integration.findMany({
     where: scoped(ctx),
     include: {
-      tokens: { where: { revokedAt: null }, orderBy: { createdAt: "desc" }, take: 1, select: { expiresAt: true } },
+      tokens: {
+        where: { revokedAt: null },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { expiresAt: true },
+      },
       _count: { select: { conversations: true } },
     },
     orderBy: { createdAt: "desc" },
   });
   return NextResponse.json({
-    items: items.map(i => ({
-      id: i.id, provider: i.provider, displayName: i.displayName, status: i.status,
-      lastSyncAt: i.lastSyncAt, errorCount: i.errorCount,
+    items: items.map((i) => ({
+      id: i.id,
+      provider: i.provider,
+      displayName: i.displayName,
+      status: i.status,
+      lastSyncAt: i.lastSyncAt,
+      errorCount: i.errorCount,
+      lastError: i.lastError,
       tokenExpiresAt: i.tokens[0]?.expiresAt ?? null,
       conversations: i._count.conversations,
+      // connected before Page tokens were captured → cannot send or receive
+      needsReconnect: i.provider === "INSTAGRAM" && i.status !== "DISCONNECTED" && !i.pageId,
     })),
   });
 });
@@ -32,17 +44,28 @@ const disconnectSchema = z.object({ integrationId: z.string() });
 export const DELETE = withAuth(async (req, ctx, correlationId) => {
   requirePermission(ctx.role, "integrations.manage");
   const body = disconnectSchema.safeParse(await req.json());
-  if (!body.success) return NextResponse.json({ error: { code: "VALIDATION", correlationId } }, { status: 422 });
+  if (!body.success)
+    return NextResponse.json({ error: { code: "VALIDATION", correlationId } }, { status: 422 });
 
   const integration = await prisma.integration.findFirst({
     where: { id: body.data.integrationId, organizationId: ctx.organizationId },
   });
-  if (!integration) return NextResponse.json({ error: { code: "NOT_FOUND", correlationId } }, { status: 404 });
+  if (!integration)
+    return NextResponse.json({ error: { code: "NOT_FOUND", correlationId } }, { status: 404 });
 
   await prisma.$transaction([
-    prisma.integrationToken.updateMany({ where: { integrationId: integration.id }, data: { revokedAt: new Date() } }),
+    prisma.integrationToken.updateMany({
+      where: { integrationId: integration.id },
+      data: { revokedAt: new Date() },
+    }),
     prisma.integration.update({ where: { id: integration.id }, data: { status: "DISCONNECTED" } }),
   ]);
-  await audit({ ctx, action: "integration.disconnect", entityType: "integration", entityId: integration.id, correlationId });
+  await audit({
+    ctx,
+    action: "integration.disconnect",
+    entityType: "integration",
+    entityId: integration.id,
+    correlationId,
+  });
   return NextResponse.json({ ok: true });
 });

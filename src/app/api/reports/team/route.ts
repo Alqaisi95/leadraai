@@ -4,13 +4,18 @@ import { prisma } from "@/lib/db";
 import { withAuth } from "@/lib/api";
 import { requirePermission } from "@/lib/rbac";
 
-const SLA_FIRST_RESPONSE_MIN = 15;
-
 export const GET = withAuth(async (req, ctx) => {
   requirePermission(ctx.role, "reports.read.team");
   const days = Math.min(365, Number(new URL(req.url).searchParams.get("days") ?? 30));
   const since = new Date(Date.now() - days * 86_400_000);
   const orgId = ctx.organizationId;
+
+  // per-organization target, not a global constant — every team sets its own
+  const org = await prisma.organization.findUniqueOrThrow({
+    where: { id: orgId },
+    select: { slaFirstResponseMin: true },
+  });
+  const SLA_FIRST_RESPONSE_MIN = org.slaFirstResponseMin;
 
   const [agents, leadCounts, staleCounts, wonCounts, apptCounts, firstResponses] = await Promise.all([
     prisma.organizationMember.findMany({
@@ -25,7 +30,9 @@ export const GET = withAuth(async (req, ctx) => {
     prisma.lead.groupBy({
       by: ["ownerMemberId"],
       where: {
-        organizationId: orgId, mergedIntoLeadId: null, ownerMemberId: { not: null },
+        organizationId: orgId,
+        mergedIntoLeadId: null,
+        ownerMemberId: { not: null },
         lastInteractionAt: { lt: new Date(Date.now() - 3 * 86_400_000) },
       },
       _count: true,
@@ -40,7 +47,11 @@ export const GET = withAuth(async (req, ctx) => {
       GROUP BY 1`,
     prisma.appointment.groupBy({
       by: ["memberId"],
-      where: { organizationId: orgId, startsAt: { gte: since }, status: { in: ["COMPLETED", "CONFIRMED", "SCHEDULED"] } },
+      where: {
+        organizationId: orgId,
+        startsAt: { gte: since },
+        status: { in: ["COMPLETED", "CONFIRMED", "SCHEDULED"] },
+      },
       _count: true,
     }),
     // first agent reply per conversation vs conversation start — one query

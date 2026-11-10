@@ -3,18 +3,14 @@
  * Matches roles from the requirements doc §3.
  */
 
-export type RoleKey =
-  | "SUPER_ADMIN"
-  | "ORG_ADMIN"
-  | "SALES_MANAGER"
-  | "AGENT"
-  | "MARKETING"
-  | "VIEWER";
+export type RoleKey = "SUPER_ADMIN" | "ORG_ADMIN" | "SALES_MANAGER" | "AGENT" | "MARKETING" | "VIEWER";
 
 export type Permission =
   // organization
   | "org.settings.manage"
   | "org.members.manage"
+  // changing what the company pays is an owner action, not a manager one
+  | "org.billing.manage"
   | "org.teams.manage"
   // integrations
   | "integrations.manage"
@@ -36,6 +32,7 @@ export type Permission =
   | "ai.settings.manage"
   | "knowledge.manage"
   | "scoring.rules.manage"
+  | "sequences.manage"
   // tasks & appointments
   | "tasks.manage.own"
   | "tasks.manage.any"
@@ -50,41 +47,64 @@ export type Permission =
 
 const MATRIX: Record<Exclude<RoleKey, "SUPER_ADMIN">, Permission[]> = {
   ORG_ADMIN: [
-    "org.settings.manage", "org.members.manage", "org.teams.manage",
+    "org.settings.manage",
+    "org.members.manage",
+    "org.teams.manage",
+    "org.billing.manage",
     "integrations.manage",
-    "conversations.read", "conversations.reply", "conversations.reassign",
-    "leads.read", "leads.update", "leads.assign",
-    "pipeline.manage", "opportunities.move", "opportunities.move.any",
-    "projects.manage", "units.manage",
-    "ai.settings.manage", "knowledge.manage", "scoring.rules.manage",
-    "tasks.manage.any", "appointments.manage.any",
-    "tasks.manage.own", "appointments.manage.own",
-    "reports.read.all", "reports.read.team", "reports.read.marketing",
+    "conversations.read",
+    "conversations.reply",
+    "conversations.reassign",
+    "leads.read",
+    "leads.update",
+    "leads.assign",
+    "pipeline.manage",
+    "opportunities.move",
+    "opportunities.move.any",
+    "projects.manage",
+    "units.manage",
+    "sequences.manage",
+    "ai.settings.manage",
+    "knowledge.manage",
+    "scoring.rules.manage",
+    "tasks.manage.any",
+    "appointments.manage.any",
+    "tasks.manage.own",
+    "appointments.manage.own",
+    "reports.read.all",
+    "reports.read.team",
+    "reports.read.marketing",
     "audit.read",
   ],
   SALES_MANAGER: [
-    "conversations.read", "conversations.reply", "conversations.reassign",
-    "leads.read", "leads.update", "leads.assign",
-    "pipeline.manage", "opportunities.move", "opportunities.move.any",
-    "tasks.manage.any", "appointments.manage.any",
-    "tasks.manage.own", "appointments.manage.own",
+    "conversations.read",
+    "conversations.reply",
+    "conversations.reassign",
+    "leads.read",
+    "leads.update",
+    "leads.assign",
+    "pipeline.manage",
+    "opportunities.move",
+    "opportunities.move.any",
+    "tasks.manage.any",
+    "appointments.manage.any",
+    "tasks.manage.own",
+    "appointments.manage.own",
+    // Chasing cold leads is exactly this role's job.
+    "sequences.manage",
     "reports.read.team",
   ],
   AGENT: [
-    "conversations.read", "conversations.reply",
-    "leads.read", "leads.update",
-    "opportunities.move", // only within allowed stages — checked in service layer
-    "tasks.manage.own", "appointments.manage.own",
-  ],
-  MARKETING: [
     "conversations.read",
+    "conversations.reply",
     "leads.read",
-    "reports.read.marketing",
+    "leads.update",
+    "opportunities.move", // only within allowed stages — checked in service layer
+    "tasks.manage.own",
+    "appointments.manage.own",
   ],
-  VIEWER: [
-    "leads.read",
-    "reports.read.team",
-  ],
+  MARKETING: ["conversations.read", "leads.read", "reports.read.marketing"],
+  VIEWER: ["leads.read", "reports.read.team"],
 };
 
 export function hasPermission(role: RoleKey, permission: Permission): boolean {

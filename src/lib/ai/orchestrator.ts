@@ -3,15 +3,18 @@
  * Runs ONLY from the worker, never inside the webhook request.
  * Refuses any conversation not in AI_ACTIVE (collision guard with agents).
  */
+import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "../db";
 import { transition } from "../conversations";
 import { sendInstagramMessage } from "../meta";
 import { findOrCreateLeadForConversation, updateLeadFromExtraction } from "../leads";
 import { applyScoringEvent } from "../scoring";
-import { searchKnowledge, queryConcepts } from "./knowledge";
-import { DEFAULT_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT_NAME } from "./prompts";
-import { draftReply, retrievalQuery, type AiRunDetails } from "./respond";
+import { searchKnowledge } from "./knowledge";
+import { DEFAULT_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT_NAME, buildUserPrompt } from "./prompts";
+import { parseAiJson, priceGuard, shouldHandoff } from "./safety";
 import { aiAllowed } from "../billing";
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 export async function handleInboundWithAi(conversationId: string) {
   const started = Date.now();
@@ -23,19 +26,14 @@ export async function handleInboundWithAi(conversationId: string) {
   // collision guard — agent already active or handed off
   if (conv.status !== "AI_ACTIVE") return { skipped: true as const, reason: conv.status };
 
-  // R2.2 — plan limit: pause AI gracefully, keep humans in the loop
+  // R2.2 — plan limit or lapsed subscription: pause AI, keep humans in the loop.
+  // The notification is raised inside aiAllowed(), once per month for the whole
+  // organisation — filing one per conversation turned a single billing event
+  // into a notification flood that buried everything else in the feed.
   const billing = await aiAllowed(conv.organizationId);
   if (!billing.allowed) {
     await transition(conv.id, "NEEDS_HUMAN");
-    await prisma.notification.create({
-      data: {
-        organizationId: conv.organizationId, type: "SLA_WARNING",
-        title: "تم إيقاف الرد الآلي — حد الباقة",
-        body: "وصلت مؤسستك حد الاستهلاك الشهري. المحادثات تتحول للموظفين. رقِّ الباقة لإعادة تفعيل AI.",
-        entityType: "conversation", entityId: conv.id,
-      },
-    });
-    return { skipped: true as const, reason: "plan_limit" };
+    return { skipped: true as const, reason: billing.reason };
   }
 
   const lead = await findOrCreateLeadForConversation(conv.id);
@@ -46,12 +44,13 @@ export async function handleInboundWithAi(conversationId: string) {
     take: 12,
   });
   const lastCustomerMsg = history.find((m) => m.senderType === "CUSTOMER")?.body ?? "";
-  const chronological = [...history].reverse().map((m) => ({ role: m.senderType, text: m.body ?? "" }));
-  // follow-ups like "وكم المقدم؟" only make sense with the previous question
-  const query = retrievalQuery(chronological);
 
   // context: knowledge + LIVE inventory (single source of truth)
-  const knowledgeChunks = await searchKnowledge(conv.organizationId, query, lead.interestedProjectId);
+  const knowledgeChunks = await searchKnowledge(
+    conv.organizationId,
+    lastCustomerMsg,
+    lead.interestedProjectId,
+  );
   const units = await prisma.unit.findMany({
     where: {
       organizationId: conv.organizationId,
@@ -63,8 +62,12 @@ export async function handleInboundWithAi(conversationId: string) {
     orderBy: { updatedAt: "desc" },
   });
   const inventory = units.map((u) => ({
-    unitNumber: u.unitNumber, project: u.project.name, type: u.unitType,
-    bedrooms: u.bedrooms, areaSqm: u.areaSqm?.toString() ?? null, price: u.price?.toString() ?? null,
+    unitNumber: u.unitNumber,
+    project: u.project.name,
+    type: u.unitType,
+    bedrooms: u.bedrooms,
+    areaSqm: u.areaSqm?.toString() ?? null,
+    price: u.price?.toString() ?? null,
   }));
 
   // active prompt version (seeded default if none)
@@ -73,24 +76,52 @@ export async function handleInboundWithAi(conversationId: string) {
   });
   if (!promptVersion) {
     promptVersion = await prisma.promptVersion.create({
-      data: { organizationId: conv.organizationId, name: DEFAULT_SYSTEM_PROMPT_NAME, version: 1, content: DEFAULT_SYSTEM_PROMPT, isActive: true },
+      data: {
+        organizationId: conv.organizationId,
+        name: DEFAULT_SYSTEM_PROMPT_NAME,
+        version: 1,
+        content: DEFAULT_SYSTEM_PROMPT,
+        isActive: true,
+      },
     });
   }
 
   const systemPrompt = promptVersion.content.replace("{{ORG_NAME}}", conv.organization.name);
-  const draft = await draftReply({ systemPrompt, history: chronological, knowledgeChunks, inventory });
-  const { ai, decision } = draft;
+  const userPrompt = buildUserPrompt({
+    history: history.reverse().map((m) => ({ role: m.senderType, text: m.body ?? "" })),
+    knowledgeChunks,
+    inventory,
+  });
+
+  let aiError: string | null = null;
+  let response: string = "";
+  try {
+    const completion = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 800,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+    });
+    response = completion.content
+      .filter((b) => b.type === "text")
+      .map((b: any) => b.text)
+      .join("");
+  } catch (e) {
+    aiError = String(e);
+  }
+
+  const ai = aiError ? null : parseAiJson(response);
+  const priceOk = ai
+    ? priceGuard(
+        ai.reply,
+        inventory.map((u) => u.price),
+      )
+    : false;
+  const decision = ai
+    ? shouldHandoff(ai, priceOk)
+    : { handoff: true, reason: aiError ? "ai_failure" : "parse_failure" };
 
   // audit the run (never full message bodies)
-  const details: AiRunDetails = {
-    chunks: knowledgeChunks.map((c) => ({ sourceId: c.sourceId, title: c.sourceTitle })),
-    reason: decision.reason,
-    model: draft.model,
-    usage: draft.usage,
-    // search terms only, not the raw message (which may contain phone numbers etc.)
-    terms: queryConcepts(query).map((c) => c[0]),
-    intent: ai?.intent ?? null,
-  };
   await prisma.aiRun.create({
     data: {
       organizationId: conv.organizationId,
@@ -100,11 +131,12 @@ export async function handleInboundWithAi(conversationId: string) {
       inputSummary: lastCustomerMsg.slice(0, 120),
       outputSummary: ai?.reply?.slice(0, 120) ?? null,
       confidence: ai?.confidence ?? null,
-      sources: details as object,
+      sources: knowledgeChunks.length
+        ? knowledgeChunks.map((c) => ({ sourceId: c.sourceId, title: c.sourceTitle }))
+        : undefined,
       handedOff: decision.handoff,
       latencyMs: Date.now() - started,
-      costUsd: draft.costUsd ?? undefined,
-      error: draft.error ?? (decision.reason === "price_guard" ? "blocked_by_price_guard" : null),
+      error: aiError?.slice(0, 300) ?? (decision.reason === "price_guard" ? "blocked_by_price_guard" : null),
     },
   });
 

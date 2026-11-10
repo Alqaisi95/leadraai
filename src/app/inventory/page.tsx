@@ -1,327 +1,504 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
-import Shell, { can, useRole } from "@/components/Shell";
-import { Modal, Field, Notice, UNIT_STATUS_LABEL, money } from "@/components/ui";
+import { useEffect, useState } from "react";
+import { Building2, Pencil, Plus, Trash2, Upload } from "lucide-react";
+import Shell from "@/components/Shell";
+import { Card } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
+import { Badge } from "@/components/ui/Badge";
+import { Dialog } from "@/components/ui/Dialog";
+import { Field, Input, Select } from "@/components/ui/Input";
+import { EmptyState, PageTitle, Skeleton } from "@/components/ui/Empty";
+import { useToast } from "@/components/ui/Toast";
+import { ImportUnitsDialog } from "@/components/inventory/ImportUnitsDialog";
 import { api } from "@/lib/client";
 
-const STATUSES = Object.keys(UNIT_STATUS_LABEL);
-const PROJECT_STATUS: Record<string, string> = {
-  PLANNING: "تخطيط",
-  UNDER_CONSTRUCTION: "قيد الإنشاء",
-  READY: "جاهز",
-  DELIVERED: "مُسلَّم",
+const UNIT_STATUS: Record<
+  string,
+  { label: string; tone: "primary" | "warn" | "danger" | "info" | "neutral" }
+> = {
+  AVAILABLE: { label: "متاحة", tone: "primary" },
+  TEMP_RESERVED: { label: "محجوزة مؤقتًا", tone: "warn" },
+  RESERVED: { label: "محجوزة", tone: "warn" },
+  SOLD: { label: "مباعة", tone: "danger" },
+  ON_HOLD: { label: "معلّقة", tone: "info" },
+  UNAVAILABLE: { label: "غير متاحة", tone: "neutral" },
 };
-const PAGE_SIZE = 100;
-
-type Project = { id: string; name: string; location?: string | null; status: string; _count?: { units: number; leads: number } };
 
 export default function InventoryPage() {
-  const role = useRole();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [projectId, setProjectId] = useState<string>("");
-  const [project, setProject] = useState<any>(null);
-  const [units, setUnits] = useState<any[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [status, setStatus] = useState("");
-  const [q, setQ] = useState("");
-  const [error, setError] = useState("");
-  const [msg, setMsg] = useState("");
-  const [modal, setModal] = useState<null | { kind: "project"; data?: any } | { kind: "unit"; data?: any } | { kind: "import" }>(null);
+  const [projects, setProjects] = useState<any[] | null>(null);
+  const [projectId, setProjectId] = useState("");
+  const [units, setUnits] = useState<any[] | null>(null);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [newProject, setNewProject] = useState(false);
+  const [newUnit, setNewUnit] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [editUnit, setEditUnit] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState<any>({});
+  const toast = useToast();
 
-  const loadProjects = useCallback(async () => {
-    const data = await api("/api/projects?pageSize=100");
-    setProjects(data.items);
-    setProjectId((cur) => cur || data.items[0]?.id || "");
+  const loadProjects = () =>
+    api("/api/projects")
+      .then((d) => setProjects(d.items))
+      .catch(() => setProjects([]));
+  const loadUnits = () =>
+    api(`/api/units${projectId ? `?projectId=${projectId}` : ""}`)
+      .then((d) => {
+        setUnits(d.items);
+        setCounts(d.counts ?? {});
+      })
+      .catch(() => setUnits([]));
+
+  useEffect(() => {
+    loadProjects();
   }, []);
+  useEffect(() => {
+    setUnits(null);
+    loadUnits();
+  }, [projectId]);
 
-  const loadUnits = useCallback(async () => {
-    if (!projectId) return;
-    const params = new URLSearchParams({ projectId, page: String(page), pageSize: String(PAGE_SIZE) });
-    if (status) params.set("status", status);
-    if (q.trim()) params.set("q", q.trim());
-    const [p, u] = await Promise.all([api(`/api/projects/${projectId}`), api(`/api/units?${params}`)]);
-    setProject(p);
-    setUnits(u.items);
-    setTotal(u.total);
-  }, [projectId, page, status, q]);
-
-  useEffect(() => { loadProjects().catch((e) => setError(e.message)); }, [loadProjects]);
-  useEffect(() => { loadUnits().catch((e) => setError(e.message)); }, [loadUnits]);
-
-  async function changeStatus(unitId: string, next: string) {
+  async function setStatus(unitId: string, status: string) {
     try {
-      await api(`/api/units/${unitId}`, { method: "PATCH", body: JSON.stringify({ status: next }) });
-      setMsg("تم تحديث الحالة — الذكاء الاصطناعي يقرأ الحالة الجديدة فوراً");
-      await loadUnits();
-    } catch (e: any) { setError(e.message); }
+      await api(`/api/units/${unitId}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
+      toast("success", "تم تحديث حالة الوحدة");
+      loadUnits();
+    } catch (e: any) {
+      toast("error", e.message);
+    }
   }
 
-  const canManageProjects = can(role, "projects.manage");
+  async function saveUnit() {
+    if (!editUnit) return;
+    setBusy(true);
+    const num = (v: any) => (v === "" || v == null ? null : Number(v));
+    try {
+      await api(`/api/units/${editUnit.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          unitNumber: editUnit.unitNumber,
+          unitType: editUnit.unitType || null,
+          floor: num(editUnit.floor),
+          bedrooms: num(editUnit.bedrooms),
+          bathrooms: num(editUnit.bathrooms),
+          areaSqm: num(editUnit.areaSqm),
+          price: num(editUnit.price),
+        }),
+      });
+      toast("success", "حُفظت الوحدة");
+      setEditUnit(null);
+      loadUnits();
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeUnit() {
+    if (!editUnit) return;
+    setBusy(true);
+    try {
+      await api(`/api/units/${editUnit.id}`, { method: "DELETE" });
+      toast("success", "حُذفت الوحدة");
+      setEditUnit(null);
+      loadUnits();
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createProject() {
+    setBusy(true);
+    try {
+      await api("/api/projects", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.name,
+          location: form.location || undefined,
+          developer: form.developer || undefined,
+          projectType: form.projectType || undefined,
+        }),
+      });
+      toast("success", "تم إنشاء المشروع");
+      setNewProject(false);
+      setForm({});
+      loadProjects();
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createUnit() {
+    setBusy(true);
+    try {
+      await api("/api/units", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId: form.projectId,
+          unitNumber: form.unitNumber,
+          unitType: form.unitType || undefined,
+          bedrooms: form.bedrooms ? Number(form.bedrooms) : undefined,
+          areaSqm: form.areaSqm ? Number(form.areaSqm) : undefined,
+          price: form.price ? Number(form.price) : undefined,
+          floor: form.floor ? Number(form.floor) : undefined,
+        }),
+      });
+      toast("success", "تمت إضافة الوحدة");
+      setNewUnit(false);
+      setForm({});
+      loadUnits();
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <Shell>
-      <div className="toolbar">
-        <h1 className="page-title">المشاريع والوحدات</h1>
-        <div className="row">
-          {canManageProjects && <button className="btn ghost" onClick={() => setModal({ kind: "project" })}>مشروع جديد</button>}
-          {projectId && <button className="btn ghost" onClick={() => setModal({ kind: "import" })}>استيراد من Excel</button>}
-          {projectId && <button className="btn" onClick={() => setModal({ kind: "unit" })}>إضافة وحدة</button>}
-        </div>
-      </div>
+      <PageTitle
+        actions={
+          <>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setForm({});
+                setNewProject(true);
+              }}
+            >
+              <Plus size={14} /> مشروع
+            </Button>
+            <Button variant="outline" onClick={() => setImportOpen(true)} disabled={!projects?.length}>
+              <Upload size={14} /> استيراد
+            </Button>
+            <Button
+              onClick={() => {
+                setForm({ projectId: projectId || projects?.[0]?.id });
+                setNewUnit(true);
+              }}
+              disabled={!projects?.length}
+            >
+              <Plus size={14} /> وحدة
+            </Button>
+          </>
+        }
+      >
+        المخزون العقاري
+      </PageTitle>
 
-      <Notice kind="err">{error}</Notice>
-      <Notice kind="ok">{msg}</Notice>
+      {projects?.length === 0 && (
+        <EmptyState
+          icon={<Building2 size={20} />}
+          title="لا مشاريع بعد"
+          hint="أضف مشروعك الأول، ثم وحداته — الأسعار والتوفر هنا هي المصدر الوحيد الذي يقرأ منه الذكاء الاصطناعي."
+          action={<Button onClick={() => setNewProject(true)}>إنشاء مشروع</Button>}
+        />
+      )}
 
-      {projects.length === 0 ? (
-        <div className="card empty">لا توجد مشاريع بعد. أضف أول مشروع ثم وحداته.</div>
-      ) : (
-        <div className="stack">
-          <div className="card spread">
-            <div className="row">
-              <select className="input" style={{ width: "auto", minWidth: 220 }} value={projectId}
-                onChange={(e) => { setProjectId(e.target.value); setPage(1); }}>
-                {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-              {project && <span className="chip">{PROJECT_STATUS[project.status] ?? project.status}</span>}
-              {project?.location && <span className="muted small">{project.location}</span>}
-            </div>
-            {project && canManageProjects && (
-              <button className="btn sm plain" onClick={() => setModal({ kind: "project", data: project })}>تعديل المشروع</button>
-            )}
+      {projects && projects.length > 0 && (
+        <>
+          <div className="mb-4 grid gap-3 md:grid-cols-3">
+            {projects.map((p) => (
+              <Card
+                key={p.id}
+                className={`cursor-pointer p-4 transition-colors ${projectId === p.id ? "border-primary" : "hover:border-primary/50"}`}
+                onClick={() => setProjectId(projectId === p.id ? "" : p.id)}
+              >
+                <div className="text-[14px] font-bold">{p.name}</div>
+                <div className="mt-1 text-[12px] text-dim">{p.location ?? "—"}</div>
+                <div className="mt-2 flex gap-3 text-[11.5px] text-dim">
+                  <span>{p._count.units} وحدة</span>
+                  <span>{p._count.leads} عميل مهتم</span>
+                </div>
+              </Card>
+            ))}
           </div>
 
-          {project && (
-            <div className="row">
-              {STATUSES.map((s) => (
-                <button key={s} className={`chip unit-${s}`} style={{ border: status === s ? "1px solid currentColor" : "1px solid transparent", cursor: "pointer" }}
-                  onClick={() => { setStatus(status === s ? "" : s); setPage(1); }}>
-                  {UNIT_STATUS_LABEL[s]}: {project.unitCounts?.[s] ?? 0}
-                </button>
-              ))}
-              <input className="input sm" style={{ width: 200 }} placeholder="بحث برقم الوحدة أو النوع" value={q}
-                onChange={(e) => { setQ(e.target.value); setPage(1); }} />
-            </div>
-          )}
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <h2 className="text-[15px] font-bold">
+              الوحدات{" "}
+              {projectId && (
+                <span className="font-normal text-dim">
+                  — {projects.find((p) => p.id === projectId)?.name}
+                </span>
+              )}
+            </h2>
+            {Object.entries(counts).map(([k, v]) => (
+              <Badge key={k} tone={UNIT_STATUS[k]?.tone ?? "neutral"}>
+                {UNIT_STATUS[k]?.label ?? k}: {v}
+              </Badge>
+            ))}
+          </div>
 
-          <div className="table-wrap">
-            {units.length === 0 ? <div className="empty">لا توجد وحدات بهذا الفلتر.</div> : (
-              <table className="data">
+          {!units && <Skeleton className="h-40" />}
+          {units?.length === 0 && <p className="text-[13px] text-dim">لا وحدات في هذا النطاق.</p>}
+
+          {units && units.length > 0 && (
+            <Card className="overflow-x-auto">
+              <table className="w-full min-w-[720px] text-[13px]">
                 <thead>
-                  <tr><th>الوحدة</th><th>المبنى</th><th>الطابق</th><th>النوع</th><th>الغرف</th><th>المساحة م²</th><th>السعر</th><th>الحالة</th><th></th></tr>
+                  <tr className="border-b border-line bg-background/60 text-xs text-dim">
+                    {["الوحدة", "المشروع", "النوع", "غرف", "المساحة", "السعر", "الحالة", ""].map((h) => (
+                      <th key={h} className="px-4 py-2.5 text-start font-semibold">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
                 </thead>
                 <tbody>
                   {units.map((u) => (
-                    <tr key={u.id}>
-                      <td style={{ fontWeight: 600 }}>{u.unitNumber}</td>
-                      <td>{u.building?.name ?? "—"}</td>
-                      <td>{u.floor ?? "—"}</td>
-                      <td>{u.unitType ?? "—"}</td>
-                      <td>{u.bedrooms ?? "—"}</td>
-                      <td>{u.areaSqm ? money(u.areaSqm) : "—"}</td>
-                      <td className="ltr">{money(u.price)}</td>
-                      <td>
-                        <select className={`input sm chip unit-${u.status}`} style={{ width: "auto" }} value={u.status}
-                          onChange={(e) => changeStatus(u.id, e.target.value)} aria-label={`حالة الوحدة ${u.unitNumber}`}>
-                          {STATUSES.map((s) => <option key={s} value={s}>{UNIT_STATUS_LABEL[s]}</option>)}
-                        </select>
+                    <tr key={u.id} className="border-b border-line last:border-0">
+                      <td className="px-4 py-2.5 font-semibold">{u.unitNumber}</td>
+                      <td className="px-4 py-2.5 text-dim">{u.project.name}</td>
+                      <td className="px-4 py-2.5">{u.unitType ?? "—"}</td>
+                      <td className="px-4 py-2.5">{u.bedrooms ?? "—"}</td>
+                      <td className="px-4 py-2.5">{u.areaSqm ? `${u.areaSqm} م²` : "—"}</td>
+                      <td className="px-4 py-2.5 font-semibold">
+                        {u.price ? `${Number(u.price).toLocaleString()} $` : "—"}
                       </td>
-                      <td><button className="btn sm plain" onClick={() => setModal({ kind: "unit", data: u })}>تعديل</button></td>
+                      <td className="px-4 py-2.5">
+                        <Select
+                          className="h-7 w-36 text-[12px]"
+                          value={u.status}
+                          onChange={(e) => setStatus(u.id, e.target.value)}
+                        >
+                          {Object.entries(UNIT_STATUS).map(([k, v]) => (
+                            <option key={k} value={k}>
+                              {v.label}
+                            </option>
+                          ))}
+                        </Select>
+                      </td>
+                      <td className="px-2 py-2.5">
+                        <button
+                          className="text-dim transition-colors hover:text-primary"
+                          onClick={() =>
+                            setEditUnit({ ...u, price: u.price ?? "", areaSqm: u.areaSqm ?? "" })
+                          }
+                          aria-label={`تعديل الوحدة ${u.unitNumber}`}
+                        >
+                          <Pencil size={14} />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            )}
-          </div>
-
-          {total > PAGE_SIZE && (
-            <div className="row">
-              <button className="btn sm plain" disabled={page <= 1} onClick={() => setPage(page - 1)}>السابق</button>
-              <span className="muted small">صفحة {page} من {Math.ceil(total / PAGE_SIZE)} · {total} وحدة</span>
-              <button className="btn sm plain" disabled={page * PAGE_SIZE >= total} onClick={() => setPage(page + 1)}>التالي</button>
-            </div>
+            </Card>
           )}
-        </div>
+        </>
       )}
 
-      {modal?.kind === "project" && (
-        <ProjectModal data={modal.data} onClose={() => setModal(null)}
-          onSaved={async (p) => { setModal(null); await loadProjects(); setProjectId(p.id); setMsg("تم حفظ المشروع"); }} />
-      )}
-      {modal?.kind === "unit" && project && (
-        <UnitModal project={project} data={modal.data} onClose={() => setModal(null)}
-          onSaved={async () => { setModal(null); setMsg("تم حفظ الوحدة"); await loadUnits(); }} />
-      )}
-      {modal?.kind === "import" && project && (
-        <ImportModal project={project} onClose={() => setModal(null)}
-          onDone={async (r) => { setModal(null); setMsg(`تم الاستيراد: ${r.created} جديدة، ${r.updated} محدّثة${r.errors.length ? `، ${r.errors.length} أخطاء` : ""}`); await loadUnits(); }} />
-      )}
-    </Shell>
-  );
-}
-
-function ProjectModal({ data, onClose, onSaved }: { data?: any; onClose: () => void; onSaved: (p: any) => void }) {
-  const [f, setF] = useState({
-    name: data?.name ?? "", location: data?.location ?? "", developer: data?.developer ?? "",
-    projectType: data?.projectType ?? "", status: data?.status ?? "PLANNING",
-    startingPrice: data?.startingPrice ?? "", deliveryDate: data?.deliveryDate?.slice(0, 10) ?? "",
-    description: data?.description ?? "",
-  });
-  const [error, setError] = useState("");
-  const set = (k: string) => (e: any) => setF({ ...f, [k]: e.target.value });
-
-  async function save() {
-    setError("");
-    const body: any = {
-      name: f.name, location: f.location || null, developer: f.developer || null, projectType: f.projectType || null,
-      description: f.description || null,
-      startingPrice: f.startingPrice === "" ? null : Number(f.startingPrice),
-      deliveryDate: f.deliveryDate || null,
-    };
-    try {
-      const saved = data
-        ? await api(`/api/projects/${data.id}`, { method: "PATCH", body: JSON.stringify({ ...body, status: f.status }) })
-        : await api("/api/projects", { method: "POST", body: JSON.stringify(Object.fromEntries(Object.entries(body).filter(([, v]) => v !== null))) });
-      onSaved(saved);
-    } catch (e: any) { setError(e.message); }
-  }
-
-  return (
-    <Modal title={data ? "تعديل المشروع" : "مشروع جديد"} onClose={onClose}>
-      <div className="form-grid">
-        <Field label="اسم المشروع *"><input className="input" value={f.name} onChange={set("name")} /></Field>
-        <Field label="الموقع"><input className="input" value={f.location} onChange={set("location")} /></Field>
-        <Field label="المطوّر"><input className="input" value={f.developer} onChange={set("developer")} /></Field>
-        <Field label="نوع المشروع"><input className="input" placeholder="سكني، تجاري…" value={f.projectType} onChange={set("projectType")} /></Field>
-        {data && (
-          <Field label="الحالة">
-            <select className="input" value={f.status} onChange={set("status")}>
-              {Object.entries(PROJECT_STATUS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-          </Field>
-        )}
-        <Field label="السعر الابتدائي"><input className="input ltr" inputMode="decimal" value={f.startingPrice} onChange={set("startingPrice")} /></Field>
-        <Field label="موعد التسليم"><input className="input" type="date" value={f.deliveryDate} onChange={set("deliveryDate")} /></Field>
-      </div>
-      <div style={{ marginTop: 12 }}>
-        <Field label="الوصف (يقرؤه الذكاء الاصطناعي)"><textarea className="input" value={f.description} onChange={set("description")} /></Field>
-      </div>
-      <Notice kind="err">{error}</Notice>
-      <div className="form-actions">
-        <button className="btn" onClick={save} disabled={f.name.trim().length < 2}>حفظ</button>
-        <button className="btn plain" onClick={onClose}>إلغاء</button>
-      </div>
-    </Modal>
-  );
-}
-
-function UnitModal({ project, data, onClose, onSaved }: { project: any; data?: any; onClose: () => void; onSaved: () => void }) {
-  const [f, setF] = useState({
-    unitNumber: data?.unitNumber ?? "", buildingName: data?.building?.name ?? "", floor: data?.floor ?? "",
-    unitType: data?.unitType ?? "", bedrooms: data?.bedrooms ?? "", bathrooms: data?.bathrooms ?? "",
-    areaSqm: data?.areaSqm ?? "", price: data?.price ?? "", status: data?.status ?? "AVAILABLE", notes: data?.notes ?? "",
-  });
-  const [error, setError] = useState("");
-  const set = (k: string) => (e: any) => setF({ ...f, [k]: e.target.value });
-
-  async function save() {
-    setError("");
-    const body = { ...f, ...(data ? {} : { projectId: project.id }) };
-    try {
-      if (data) await api(`/api/units/${data.id}`, { method: "PATCH", body: JSON.stringify(body) });
-      else await api("/api/units", { method: "POST", body: JSON.stringify(body) });
-      onSaved();
-    } catch (e: any) { setError(e.message); }
-  }
-
-  return (
-    <Modal title={data ? `تعديل الوحدة ${data.unitNumber}` : `وحدة جديدة في ${project.name}`} onClose={onClose}>
-      <div className="form-grid">
-        <Field label="رقم الوحدة *"><input className="input" value={f.unitNumber} onChange={set("unitNumber")} /></Field>
-        <Field label="المبنى">
-          <input className="input" list="buildings" value={f.buildingName} onChange={set("buildingName")} />
-          <datalist id="buildings">{project.buildings?.map((b: any) => <option key={b.id} value={b.name} />)}</datalist>
-        </Field>
-        <Field label="الطابق"><input className="input" inputMode="numeric" value={f.floor} onChange={set("floor")} /></Field>
-        <Field label="النوع"><input className="input" placeholder="شقة، فيلا، محل…" value={f.unitType} onChange={set("unitType")} /></Field>
-        <Field label="غرف النوم"><input className="input" inputMode="numeric" value={f.bedrooms} onChange={set("bedrooms")} /></Field>
-        <Field label="الحمامات"><input className="input" inputMode="numeric" value={f.bathrooms} onChange={set("bathrooms")} /></Field>
-        <Field label="المساحة م²"><input className="input ltr" inputMode="decimal" value={f.areaSqm} onChange={set("areaSqm")} /></Field>
-        <Field label="السعر"><input className="input ltr" inputMode="decimal" value={f.price} onChange={set("price")} /></Field>
-        <Field label="الحالة">
-          <select className="input" value={f.status} onChange={set("status")}>
-            {STATUSES.map((s) => <option key={s} value={s}>{UNIT_STATUS_LABEL[s]}</option>)}
-          </select>
-        </Field>
-      </div>
-      <div style={{ marginTop: 12 }}>
-        <Field label="ملاحظات"><textarea className="input" style={{ minHeight: 70 }} value={f.notes} onChange={set("notes")} /></Field>
-      </div>
-      <p className="muted small" style={{ marginTop: 8 }}>كل تغيير في السعر أو الحالة يُسجَّل في سجل الوحدة، والذكاء الاصطناعي يقرأ القيمة الجديدة فوراً.</p>
-      <Notice kind="err">{error}</Notice>
-      <div className="form-actions">
-        <button className="btn" onClick={save} disabled={!String(f.unitNumber).trim()}>حفظ</button>
-        <button className="btn plain" onClick={onClose}>إلغاء</button>
-      </div>
-    </Modal>
-  );
-}
-
-function ImportModal({ project, onClose, onDone }: { project: any; onClose: () => void; onDone: (r: any) => void }) {
-  const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<any>(null);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function send(dryRun: boolean) {
-    if (!file) return;
-    setError(""); setBusy(true);
-    const form = new FormData();
-    form.set("file", file);
-    form.set("projectId", project.id);
-    if (dryRun) form.set("dryRun", "1");
-    try {
-      const r = await api("/api/units/import", { method: "POST", body: form });
-      if (dryRun) setPreview(r); else onDone(r);
-    } catch (e: any) { setError(e.message); }
-    finally { setBusy(false); }
-  }
-
-  function downloadTemplate() {
-    const csv = "﻿رقم الوحدة,المبنى,الطابق,النوع,غرف النوم,الحمامات,المساحة,السعر,الحالة,ملاحظات\nA-101,برج A,1,شقة,2,2,120,95000,متاحة,\n";
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    a.download = "leadra-units-template.csv";
-    a.click();
-  }
-
-  return (
-    <Modal title={`استيراد وحدات إلى ${project.name}`} onClose={onClose}>
-      <p className="muted small" style={{ marginBottom: 12 }}>
-        ملف CSV أو Excel (.xlsx). الوحدة الموجودة بنفس الرقم تُحدَّث، والجديدة تُضاف. الأعمدة بالعربي أو الإنجليزي.
-      </p>
-      <div className="row" style={{ marginBottom: 12 }}>
-        <input type="file" accept=".csv,.xlsx" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); }} />
-        <button className="btn sm plain" onClick={downloadTemplate}>تحميل القالب</button>
-      </div>
-      {preview && (
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div className="row">
-            <span className="chip unit-AVAILABLE">جديدة: {preview.toCreate}</span>
-            <span className="chip unit-RESERVED">تحديث: {preview.toUpdate}</span>
-            {preview.errors.length > 0 && <span className="chip unit-UNAVAILABLE">أخطاء: {preview.errors.length}</span>}
+      <Dialog
+        open={editUnit !== null}
+        onClose={() => setEditUnit(null)}
+        title={`تعديل الوحدة ${editUnit?.unitNumber ?? ""}`}
+        footer={
+          <>
+            <Button variant="danger" loading={busy} onClick={removeUnit} className="me-auto">
+              <Trash2 size={13} /> حذف
+            </Button>
+            <Button variant="outline" onClick={() => setEditUnit(null)}>
+              إلغاء
+            </Button>
+            <Button loading={busy} disabled={!editUnit?.unitNumber} onClick={saveUnit}>
+              حفظ
+            </Button>
+          </>
+        }
+      >
+        {editUnit && (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="رقم الوحدة">
+              <Input
+                value={editUnit.unitNumber ?? ""}
+                onChange={(e) => setEditUnit({ ...editUnit, unitNumber: e.target.value })}
+              />
+            </Field>
+            <Field label="الطابق">
+              <Input
+                inputMode="numeric"
+                value={editUnit.floor ?? ""}
+                onChange={(e) => setEditUnit({ ...editUnit, floor: e.target.value })}
+              />
+            </Field>
+            <Field label="النوع">
+              <Input
+                value={editUnit.unitType ?? ""}
+                onChange={(e) => setEditUnit({ ...editUnit, unitType: e.target.value })}
+              />
+            </Field>
+            <Field label="غرف النوم">
+              <Input
+                inputMode="numeric"
+                value={editUnit.bedrooms ?? ""}
+                onChange={(e) => setEditUnit({ ...editUnit, bedrooms: e.target.value })}
+              />
+            </Field>
+            <Field label="الحمامات">
+              <Input
+                inputMode="numeric"
+                value={editUnit.bathrooms ?? ""}
+                onChange={(e) => setEditUnit({ ...editUnit, bathrooms: e.target.value })}
+              />
+            </Field>
+            <Field label="المساحة (م²)">
+              <Input
+                inputMode="numeric"
+                value={editUnit.areaSqm ?? ""}
+                onChange={(e) => setEditUnit({ ...editUnit, areaSqm: e.target.value })}
+              />
+            </Field>
+            <div className="col-span-2">
+              <Field label="السعر ($)">
+                <Input
+                  inputMode="numeric"
+                  value={editUnit.price ?? ""}
+                  onChange={(e) => setEditUnit({ ...editUnit, price: e.target.value })}
+                />
+              </Field>
+              <p className="mt-1.5 text-[11.5px] text-dim">
+                تغيير السعر يُسجَّل في تاريخ الوحدة — لأنه رقم يُقتبس للعملاء.
+              </p>
+            </div>
           </div>
-          {preview.unknownHeaders.length > 0 && <p className="small muted" style={{ marginTop: 8 }}>أعمدة لن تُستورد: {preview.unknownHeaders.join("، ")}</p>}
-          {preview.errors.slice(0, 8).map((e: any) => <p key={e.line} className="small error-text">سطر {e.line}: {e.message}</p>)}
+        )}
+      </Dialog>
+
+      <ImportUnitsDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        projects={projects ?? []}
+        onImported={() => {
+          loadProjects();
+          loadUnits();
+        }}
+      />
+
+      <Dialog
+        open={newProject}
+        onClose={() => setNewProject(false)}
+        title="مشروع جديد"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setNewProject(false)}>
+              إلغاء
+            </Button>
+            <Button loading={busy} disabled={!form.name} onClick={createProject}>
+              إنشاء
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-3">
+          <Field label="اسم المشروع">
+            <Input
+              value={form.name ?? ""}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              autoFocus
+            />
+          </Field>
+          <Field label="الموقع">
+            <Input
+              value={form.location ?? ""}
+              onChange={(e) => setForm({ ...form, location: e.target.value })}
+              placeholder="بغداد — المنصور"
+            />
+          </Field>
+          <Field label="المطوّر">
+            <Input
+              value={form.developer ?? ""}
+              onChange={(e) => setForm({ ...form, developer: e.target.value })}
+            />
+          </Field>
+          <Field label="النوع">
+            <Input
+              value={form.projectType ?? ""}
+              onChange={(e) => setForm({ ...form, projectType: e.target.value })}
+              placeholder="سكني / تجاري"
+            />
+          </Field>
         </div>
-      )}
-      <Notice kind="err">{error}</Notice>
-      <div className="form-actions">
-        {!preview
-          ? <button className="btn" disabled={!file || busy} onClick={() => send(true)}>{busy ? "جارٍ الفحص…" : "فحص الملف"}</button>
-          : <button className="btn" disabled={busy || preview.toCreate + preview.toUpdate === 0} onClick={() => send(false)}>{busy ? "جارٍ الاستيراد…" : "تأكيد الاستيراد"}</button>}
-        <button className="btn plain" onClick={onClose}>إلغاء</button>
-      </div>
-    </Modal>
+      </Dialog>
+
+      <Dialog
+        open={newUnit}
+        onClose={() => setNewUnit(false)}
+        title="وحدة جديدة"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setNewUnit(false)}>
+              إلغاء
+            </Button>
+            <Button loading={busy} disabled={!form.projectId || !form.unitNumber} onClick={createUnit}>
+              إضافة
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-3">
+          <Field label="المشروع">
+            <Select
+              value={form.projectId ?? ""}
+              onChange={(e) => setForm({ ...form, projectId: e.target.value })}
+            >
+              {projects?.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="رقم الوحدة">
+              <Input
+                value={form.unitNumber ?? ""}
+                onChange={(e) => setForm({ ...form, unitNumber: e.target.value })}
+                placeholder="A-101"
+              />
+            </Field>
+            <Field label="الطابق">
+              <Input
+                inputMode="numeric"
+                value={form.floor ?? ""}
+                onChange={(e) => setForm({ ...form, floor: e.target.value })}
+              />
+            </Field>
+            <Field label="النوع">
+              <Input
+                value={form.unitType ?? ""}
+                onChange={(e) => setForm({ ...form, unitType: e.target.value })}
+                placeholder="شقة"
+              />
+            </Field>
+            <Field label="غرف النوم">
+              <Input
+                inputMode="numeric"
+                value={form.bedrooms ?? ""}
+                onChange={(e) => setForm({ ...form, bedrooms: e.target.value })}
+              />
+            </Field>
+            <Field label="المساحة (م²)">
+              <Input
+                inputMode="numeric"
+                value={form.areaSqm ?? ""}
+                onChange={(e) => setForm({ ...form, areaSqm: e.target.value })}
+              />
+            </Field>
+            <Field label="السعر ($)">
+              <Input
+                inputMode="numeric"
+                value={form.price ?? ""}
+                onChange={(e) => setForm({ ...form, price: e.target.value })}
+              />
+            </Field>
+          </div>
+        </div>
+      </Dialog>
+    </Shell>
   );
 }

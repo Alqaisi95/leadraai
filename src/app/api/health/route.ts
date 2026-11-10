@@ -1,64 +1,42 @@
 /**
- * Health check for uptime monitors and the ops dashboard.
- *  - Public:  { ok } — 200 when the database answers, 503 otherwise.
- *  - With `Authorization: Bearer CRON_SECRET`: queue depth, dead letters,
- *    the age of the oldest waiting event, and the last successful processing.
+ * Liveness probe. The bare `status` is public so an uptime checker can hit it
+ * without a credential; everything else is not.
+ *
+ * Queue depth and which integrations are configured describe how much traffic
+ * the platform handles and which keys are set — free reconnaissance for anyone
+ * who asks. They stay available for operators via the cron secret, which is the
+ * credential the monitoring side already holds.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { secretsMatch } from "@/lib/crypto";
 
 export const dynamic = "force-dynamic";
 
-const STUCK_AFTER_SEC = 300; // a queued event older than 5 min means processing is stalled
+function isOperator(req: NextRequest): boolean {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return false;
+  return secretsMatch(req.headers.get("authorization") ?? "", `Bearer ${secret}`);
+}
 
 export async function GET(req: NextRequest) {
   const started = Date.now();
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    const [queued, dead] = await Promise.all([
+      prisma.webhookEvent.count({ where: { status: { in: ["RECEIVED", "QUEUED", "PROCESSING"] } } }),
+      prisma.webhookEvent.count({ where: { status: "DEAD_LETTER" } }),
+    ]);
+
+    if (!isOperator(req)) return NextResponse.json({ status: "ok" });
+
+    return NextResponse.json({
+      status: "ok",
+      dbLatencyMs: Date.now() - started,
+      queue: { depth: queued, dead },
+      ai: process.env.ANTHROPIC_API_KEY ? "configured" : "missing",
+      meta: process.env.META_APP_ID ? "configured" : "missing",
+    });
   } catch (e) {
-    console.error("health_db_failed", String(e).slice(0, 200));
-    return NextResponse.json({ ok: false, db: false }, { status: 503 });
+    return NextResponse.json({ status: "degraded", error: "database_unreachable" }, { status: 503 });
   }
-  const dbMs = Date.now() - started;
-
-  const authorized =
-    !!process.env.CRON_SECRET && req.headers.get("authorization") === `Bearer ${process.env.CRON_SECRET}`;
-  if (!authorized) return NextResponse.json({ ok: true });
-
-  const [byStatus, oldestQueued, lastProcessed] = await Promise.all([
-    prisma.webhookEvent.groupBy({ by: ["status"], _count: { _all: true } }),
-    prisma.webhookEvent.findFirst({
-      where: { status: "QUEUED", NOT: { externalEventId: { startsWith: "oauth_state:" } } },
-      orderBy: { receivedAt: "asc" },
-      select: { receivedAt: true },
-    }),
-    prisma.webhookEvent.findFirst({
-      where: { status: "PROCESSED" },
-      orderBy: { processedAt: "desc" },
-      select: { processedAt: true },
-    }),
-  ]);
-
-  const counts = Object.fromEntries(
-    byStatus.map((r: { status: string; _count: { _all: number } }) => [r.status, r._count._all]),
-  ) as Record<string, number>;
-  const oldestQueuedSec = oldestQueued ? Math.round((Date.now() - oldestQueued.receivedAt.getTime()) / 1000) : 0;
-  const stalled = oldestQueuedSec > STUCK_AFTER_SEC;
-
-  return NextResponse.json(
-    {
-      ok: !stalled,
-      db: { ok: true, latencyMs: dbMs },
-      queue: {
-        queued: counts.QUEUED ?? 0,
-        processing: counts.PROCESSING ?? 0,
-        deadLetter: counts.DEAD_LETTER ?? 0,
-        oldestQueuedSec,
-        stalled,
-      },
-      lastProcessedAt: lastProcessed?.processedAt ?? null,
-      aiModel: process.env.AI_MODEL || "claude-sonnet-4-6",
-    },
-    { status: stalled ? 503 : 200 },
-  );
 }

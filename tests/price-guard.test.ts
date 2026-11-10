@@ -31,7 +31,14 @@ describe("Price guard v2 (R4.7) — الحارس الأهم بالنظام", () 
 });
 
 describe("Handoff decision", () => {
-  const base = { reply: "x", confidence: 0.9, handoff: false, handoff_reason: null, intent: "buy", extracted: {} };
+  const base = {
+    reply: "x",
+    confidence: 0.9,
+    handoff: false,
+    handoff_reason: null,
+    intent: "buy",
+    extracted: {},
+  };
   it("low confidence hands off", () => {
     expect(shouldHandoff({ ...base, confidence: 0.5 }, true).handoff).toBe(true);
   });
@@ -42,7 +49,9 @@ describe("Handoff decision", () => {
     expect(shouldHandoff({ ...base, intent: "complaint" }, true).handoff).toBe(true);
   });
   it("model-requested handoff respected", () => {
-    expect(shouldHandoff({ ...base, handoff: true, handoff_reason: "human_requested" }, true).reason).toBe("human_requested");
+    expect(shouldHandoff({ ...base, handoff: true, handoff_reason: "human_requested" }, true).reason).toBe(
+      "human_requested",
+    );
   });
   it("confident, safe, non-complaint → no handoff", () => {
     expect(shouldHandoff(base, true).handoff).toBe(false);
@@ -51,7 +60,9 @@ describe("Handoff decision", () => {
 
 describe("AI JSON parsing", () => {
   it("parses fenced JSON", () => {
-    const r = parseAiJson('```json\n{"reply":"أهلاً","confidence":0.8,"handoff":false,"handoff_reason":null,"intent":"buy","extracted":{}}\n```');
+    const r = parseAiJson(
+      '```json\n{"reply":"أهلاً","confidence":0.8,"handoff":false,"handoff_reason":null,"intent":"buy","extracted":{}}\n```',
+    );
     expect(r?.reply).toBe("أهلاً");
   });
   it("rejects malformed output", () => {

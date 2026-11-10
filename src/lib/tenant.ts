@@ -27,7 +27,7 @@ export class TenantMismatchError extends Error {
 export async function findScopedOrThrow<T>(
   finder: (where: { id: string; organizationId: string }) => Promise<T | null>,
   id: string,
-  ctx: TenantContext
+  ctx: TenantContext,
 ): Promise<T> {
   const record = await finder({ id, organizationId: ctx.organizationId });
   if (!record) throw new TenantMismatchError();

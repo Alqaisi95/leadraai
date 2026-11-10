@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "leadra-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000,
+      "env": {
+        "DATABASE_URL": "postgresql://omar@localhost:5432/leadra?schema=public",
+        "DIRECT_URL": "postgresql://omar@localhost:5432/leadra?schema=public"
+      }
+    }
+  ]
+}

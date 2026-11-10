@@ -1,75 +1,76 @@
-/**
- * GET  /api/members — organization members with workload
- * POST /api/members — add a member. A new user gets a temporary password,
- *   returned ONCE for the admin to hand over; an existing user (another org)
- *   keeps their own password.
- */
+/** Team roster + role management. */
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { withAuth, err } from "@/lib/api";
 import { requirePermission } from "@/lib/rbac";
 import { audit } from "@/lib/audit";
-import { hashPassword } from "@/lib/auth";
-import { ASSIGNABLE_ROLES, temporaryPassword } from "@/lib/members";
+import { seatLimit, seatsInUse } from "@/lib/invitations";
 
 export const GET = withAuth(async (_req, ctx) => {
-  requirePermission(ctx.role, "org.members.manage");
-  const members = await prisma.organizationMember.findMany({
+  requirePermission(ctx.role, "leads.read");
+  const rows = await prisma.organizationMember.findMany({
     where: { organizationId: ctx.organizationId },
-    orderBy: [{ status: "asc" }, { createdAt: "asc" }],
+    orderBy: [{ status: "asc" }, { role: "asc" }, { createdAt: "asc" }],
     include: {
-      user: { select: { fullName: true, email: true, phone: true, mfaEnabled: true } },
-      teamMembers: { include: { team: { select: { name: true } } } },
-      _count: { select: { assignedLeads: true } },
+      user: { select: { id: true, fullName: true, email: true, mfaEnabled: true } },
+      _count: { select: { assignedLeads: true, tasks: true, appointments: true } },
     },
   });
+
+  const [limit, used] = await Promise.all([seatLimit(ctx.organizationId), seatsInUse(ctx.organizationId)]);
+
   return NextResponse.json({
-    items: members.map((m: any) => ({
-      id: m.id, role: m.role, status: m.status, joinedAt: m.joinedAt, createdAt: m.createdAt,
-      fullName: m.user.fullName, email: m.user.email, phone: m.user.phone, mfaEnabled: m.user.mfaEnabled,
-      teams: m.teamMembers.map((t: any) => t.team.name),
-      leads: m._count.assignedLeads,
-      isMe: m.id === ctx.memberId,
+    // inviteTokenHash must never leave the server
+    items: rows.map(({ inviteTokenHash, ...m }) => ({
+      ...m,
+      inviteExpired: m.status === "INVITED" && (!m.inviteExpiresAt || m.inviteExpiresAt < new Date()),
     })),
+    seats: { used, limit },
   });
 });
 
-const createSchema = z.object({
-  fullName: z.string().trim().min(2).max(120),
-  email: z.string().trim().toLowerCase().email(),
-  phone: z.string().max(30).optional(),
-  role: z.enum(ASSIGNABLE_ROLES),
+const patchSchema = z.object({
+  memberId: z.string(),
+  role: z.enum(["ORG_ADMIN", "SALES_MANAGER", "AGENT", "MARKETING", "VIEWER"]).optional(),
+  status: z.enum(["ACTIVE", "SUSPENDED"]).optional(),
 });
 
-export const POST = withAuth(async (req, ctx, correlationId) => {
+export const PATCH = withAuth(async (req, ctx, correlationId) => {
   requirePermission(ctx.role, "org.members.manage");
-  const body = createSchema.safeParse(await req.json());
-  if (!body.success) return err(422, "VALIDATION", body.error.issues.map((i) => i.message).join("; "), correlationId);
-  const { fullName, email, phone, role } = body.data;
+  const body = patchSchema.safeParse(await req.json());
+  if (!body.success) return err(422, "VALIDATION", "memberId and role/status required", correlationId);
 
-  let user = await prisma.user.findUnique({ where: { email } });
-  let tempPassword: string | null = null;
+  const member = await prisma.organizationMember.findFirst({
+    where: { id: body.data.memberId, organizationId: ctx.organizationId },
+  });
+  if (!member) return err(404, "NOT_FOUND", "Member not found", correlationId);
+  if (member.id === ctx.memberId)
+    return err(422, "SELF_CHANGE", "لا يمكنك تغيير دورك أو حالتك بنفسك", correlationId);
 
-  if (user) {
-    const existing = await prisma.organizationMember.findUnique({
-      where: { organizationId_userId: { organizationId: ctx.organizationId, userId: user.id } },
+  // never leave the org without an active admin
+  if (member.role === "ORG_ADMIN" && (body.data.role !== "ORG_ADMIN" || body.data.status === "SUSPENDED")) {
+    const admins = await prisma.organizationMember.count({
+      where: { organizationId: ctx.organizationId, role: "ORG_ADMIN", status: "ACTIVE" },
     });
-    if (existing) return err(409, "ALREADY_MEMBER", "هذا البريد عضو في الشركة بالفعل", correlationId);
-  } else {
-    tempPassword = temporaryPassword();
-    user = await prisma.user.create({
-      data: { email, fullName, phone, passwordHash: await hashPassword(tempPassword) },
-    });
+    if (admins <= 1) return err(422, "LAST_ADMIN", "لا يمكن إزالة آخر مدير للمؤسسة", correlationId);
   }
 
-  const member = await prisma.organizationMember.create({
+  const updated = await prisma.organizationMember.update({
+    where: { id: member.id },
     data: {
-      organizationId: ctx.organizationId, userId: user.id, role, status: "ACTIVE",
-      joinedAt: new Date(), invitedByEmail: undefined,
+      ...(body.data.role ? { role: body.data.role } : {}),
+      ...(body.data.status ? { status: body.data.status } : {}),
     },
   });
-  await audit({ ctx, action: "member.create", entityType: "member", entityId: member.id, after: { email, role, newUser: !!tempPassword }, correlationId });
-
-  return NextResponse.json({ id: member.id, email, role, tempPassword, existingUser: !tempPassword }, { status: 201 });
+  await audit({
+    ctx,
+    action: "member.update",
+    entityType: "member",
+    entityId: member.id,
+    before: { role: member.role, status: member.status },
+    after: { role: updated.role, status: updated.status },
+    correlationId,
+  });
+  return NextResponse.json(updated);
 });

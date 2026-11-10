@@ -9,10 +9,13 @@ import { withAuth, err } from "@/lib/api";
 import { requirePermission, hasPermission } from "@/lib/rbac";
 import { TenantMismatchError } from "@/lib/tenant";
 import { audit } from "@/lib/audit";
-import { missingRequirements } from "@/lib/pipeline";
 import { applyScoringEvent } from "@/lib/scoring";
 
-const schema = z.object({ stageId: z.string(), lostReason: z.string().max(500).optional(), value: z.number().nonnegative().optional() });
+const schema = z.object({
+  stageId: z.string(),
+  lostReason: z.string().max(500).optional(),
+  value: z.number().nonnegative().optional(),
+});
 
 export const POST = withAuth(async (req, ctx, correlationId) => {
   requirePermission(ctx.role, "opportunities.move");
@@ -39,9 +42,15 @@ export const POST = withAuth(async (req, ctx, correlationId) => {
 
   // mandatory entry rules
   const rules = (target.entryRules as { requires?: string[] } | null)?.requires ?? [];
-  const missing = missingRequirements(opp.lead as Record<string, unknown>, rules);
-  if (missing.length) {
-    return err(409, "ENTRY_RULE", `لا يمكن النقل إلى "${target.name}" قبل استكمال: ${missing.join("، ")}`, correlationId);
+  for (const field of rules) {
+    if (!(opp.lead as any)[field]) {
+      return err(
+        409,
+        "ENTRY_RULE",
+        `لا يمكن النقل إلى "${target.name}" قبل استكمال: ${field}`,
+        correlationId,
+      );
+    }
   }
   if (target.isLost && !body.data.lostReason) {
     return err(409, "ENTRY_RULE", "سبب الخسارة مطلوب عند نقل الفرصة إلى مرحلة الفقدان", correlationId);
@@ -61,6 +70,14 @@ export const POST = withAuth(async (req, ctx, correlationId) => {
     await applyScoringEvent(opp.leadId, "VISIT_REQUESTED");
   }
 
-  await audit({ ctx, action: "opportunity.move", entityType: "opportunity", entityId: opp.id, before: { stage: opp.stage.name }, after: { stage: target.name }, correlationId });
+  await audit({
+    ctx,
+    action: "opportunity.move",
+    entityType: "opportunity",
+    entityId: opp.id,
+    before: { stage: opp.stage.name },
+    after: { stage: target.name },
+    correlationId,
+  });
   return NextResponse.json(updated);
 });

@@ -1,36 +1,71 @@
-/** GET/PATCH /api/organization — the current organization's profile. */
+/** Organization profile and operating targets. */
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { withAuth, err } from "@/lib/api";
 import { requirePermission } from "@/lib/rbac";
 import { audit } from "@/lib/audit";
-import { getUsage } from "@/lib/billing";
 
 export const GET = withAuth(async (_req, ctx) => {
+  requirePermission(ctx.role, "leads.read");
   const org = await prisma.organization.findUniqueOrThrow({
     where: { id: ctx.organizationId },
-    select: { id: true, name: true, country: true, timezone: true, language: true, status: true, createdAt: true },
+    select: {
+      id: true,
+      name: true,
+      country: true,
+      timezone: true,
+      language: true,
+      slaFirstResponseMin: true,
+      createdAt: true,
+    },
   });
-  const usage = await getUsage(ctx.organizationId).catch(() => null);
-  return NextResponse.json({ ...org, usage, myRole: ctx.role });
+
+  const subscription = await prisma.subscription.findFirst({
+    where: { organizationId: ctx.organizationId },
+    select: { planKey: true, status: true, trialEndsAt: true, limits: true },
+  });
+
+  return NextResponse.json({ organization: org, subscription });
 });
 
 const schema = z.object({
-  name: z.string().trim().min(2).max(200).optional(),
-  country: z.string().max(60).nullable().optional(),
-  timezone: z.string().max(60).refine((tz) => {
-    try { new Intl.DateTimeFormat("en", { timeZone: tz }); return true; } catch { return false; }
-  }, "invalid timezone").optional(),
+  name: z.string().min(2).max(200).optional(),
+  country: z.string().max(80).nullish(),
+  timezone: z.string().min(2).max(64).optional(),
   language: z.enum(["AR", "EN"]).optional(),
+  slaFirstResponseMin: z.number().int().min(1).max(1440).optional(),
 });
 
 export const PATCH = withAuth(async (req, ctx, correlationId) => {
   requirePermission(ctx.role, "org.settings.manage");
-  const body = schema.safeParse(await req.json());
-  if (!body.success) return err(422, "VALIDATION", body.error.issues.map((i) => i.message).join("; "), correlationId);
+  const body = schema.safeParse(await req.json().catch(() => ({})));
+  if (!body.success) {
+    return err(422, "VALIDATION", body.error.issues.map((i) => i.message).join("; "), correlationId);
+  }
+
+  if (body.data.timezone) {
+    // a bad timezone would silently skew every report and reminder
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: body.data.timezone });
+    } catch {
+      return err(422, "VALIDATION", "المنطقة الزمنية غير صالحة", correlationId);
+    }
+  }
+
   const before = await prisma.organization.findUniqueOrThrow({ where: { id: ctx.organizationId } });
-  const updated = await prisma.organization.update({ where: { id: ctx.organizationId }, data: body.data });
-  await audit({ ctx, action: "org.update", entityType: "organization", entityId: ctx.organizationId, before, after: updated, correlationId });
-  return NextResponse.json(updated);
+  const data = Object.fromEntries(Object.entries(body.data).filter(([, v]) => v !== undefined)) as any;
+
+  const org = await prisma.organization.update({ where: { id: ctx.organizationId }, data });
+  await audit({
+    ctx,
+    action: "org.settings_update",
+    entityType: "organization",
+    entityId: org.id,
+    before: { name: before.name, timezone: before.timezone, slaFirstResponseMin: before.slaFirstResponseMin },
+    after: { name: org.name, timezone: org.timezone, slaFirstResponseMin: org.slaFirstResponseMin },
+    correlationId,
+  });
+
+  return NextResponse.json({ organization: org });
 });

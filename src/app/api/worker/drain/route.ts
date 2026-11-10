@@ -5,12 +5,14 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { processBatch } from "@/lib/queue";
+import { secretsMatch } from "@/lib/crypto";
 
 export const maxDuration = 60; // seconds — AI calls need room
 
 export async function GET(req: NextRequest) {
-  const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+  const secret = process.env.CRON_SECRET;
+  const auth = req.headers.get("authorization") ?? "";
+  if (!secret || !secretsMatch(auth, `Bearer ${secret}`)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   const result = await processBatch(15);

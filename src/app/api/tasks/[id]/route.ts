@@ -1,4 +1,3 @@
-/** PATCH /api/tasks/:id { status } — complete or reopen a task. */
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
@@ -10,20 +9,16 @@ const schema = z.object({ status: z.enum(["OPEN", "DONE", "CANCELLED"]) });
 
 export const PATCH = withAuth(async (req, ctx, correlationId) => {
   requirePermission(ctx.role, "tasks.manage.own");
-  const id = new URL(req.url).pathname.split("/").at(-1)!;
+  const id = req.nextUrl.pathname.split("/").at(-1)!;
   const body = schema.safeParse(await req.json());
-  if (!body.success) return err(422, "VALIDATION", "status is required", correlationId);
+  if (!body.success) return err(422, "VALIDATION", "status must be OPEN | DONE | CANCELLED", correlationId);
 
-  const task = await prisma.task.findFirst({
-    where: {
-      id, organizationId: ctx.organizationId,
-      ...(hasPermission(ctx.role, "tasks.manage.any") ? {} : { assigneeMemberId: ctx.memberId }),
-    },
-  });
+  const task = await prisma.task.findFirst({ where: { id, organizationId: ctx.organizationId } });
   if (!task) throw new TenantMismatchError();
+  if (task.assigneeMemberId !== ctx.memberId) requirePermission(ctx.role, "tasks.manage.any");
 
   const updated = await prisma.task.update({
-    where: { id },
+    where: { id: task.id },
     data: { status: body.data.status, completedAt: body.data.status === "DONE" ? new Date() : null },
   });
   return NextResponse.json(updated);

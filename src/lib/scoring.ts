@@ -17,7 +17,12 @@ export async function applyScoringEvent(leadId: string, event: string) {
   const rule =
     (lead.interestedProjectId
       ? await prisma.scoringRule.findFirst({
-          where: { organizationId: lead.organizationId, projectId: lead.interestedProjectId, event, active: true },
+          where: {
+            organizationId: lead.organizationId,
+            projectId: lead.interestedProjectId,
+            event,
+            active: true,
+          },
         })
       : null) ??
     (await prisma.scoringRule.findFirst({

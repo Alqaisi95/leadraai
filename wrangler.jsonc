@@ -1,53 +1,55 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // "leadraai" matches the Worker the GitHub-linked build already deploys to.
+  // Renaming would create a second Worker and strand the dashboard secrets.
   "name": "leadraai",
-  "main": "worker/cloudflare.ts",
-  "compatibility_date": "2026-10-01",
-  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  // cloudflare-worker.ts wraps the generated .open-next/worker.js to add the cron handler.
+  "main": "cloudflare-worker.ts",
+  "compatibility_date": "2026-10-28",
+  // Required by the pg driver, node:crypto (15 call sites), and web-push.
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
+
   "assets": {
     "directory": ".open-next/assets",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
   },
-  "observability": { "enabled": true },
 
-  // Non-secret settings. Secrets (DATABASE_URL, keys, tokens) are added in the
-  // dashboard as type "Secret" — those survive every deploy from GitHub.
-  "vars": {
-    "APP_URL": "https://leadraai.omar-alqaisi95.workers.dev"
+  "observability": {
+    "enabled": true,
   },
-  // keep any plain variables added in the dashboard instead of wiping them on deploy
+
+  // Non-secret settings. Secrets (DATABASE_URL, keys, tokens) live in the
+  // dashboard as type "Secret" and survive every deploy from GitHub.
+  "vars": {
+    "APP_URL": "https://leadraai.omar-alqaisi95.workers.dev",
+  },
+  // Keep plain variables added in the dashboard instead of wiping them on deploy.
   "keep_vars": true,
 
-  // Cron Triggers — replace the Vercel crons (see worker/cloudflare.ts)
-  "triggers": {
-    "crons": ["* * * * *", "0 * * * *"]
-  },
+  // Cloudflare Email Service. SMTP cannot work here (no node:net), so the
+  // four email features send through this binding instead. The sending
+  // domain must be onboarded once:
+  //   npx wrangler email sending enable <domain>
+  // Until then sends return false and in-app notifications still work.
+  "send_email": [{ "name": "EMAIL" }],
 
-  // Inbound Meta events: the webhook route signals this queue and the
-  // consumer in worker/cloudflare.ts processes them within seconds.
-  // Create the queue once before deploying: Storage & Databases → Queues →
-  // Create → name "leadra-webhooks" (requires the Workers Paid plan).
-  "queues": {
-    "producers": [{ "binding": "WEBHOOK_QUEUE", "queue": "leadra-webhooks" }],
-    "consumers": [
-      { "queue": "leadra-webhooks", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 3 }
-    ]
-  },
-
-  // Rate limiting shared across isolates (src/lib/ratelimit.ts).
-  // namespace_id is any number unique within your account.
-  "ratelimits": [
-    { "name": "RL_LOGIN", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
-    { "name": "RL_API", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } }
-  ],
-
-  // Database: by default the app connects with the DATABASE_URL secret.
-  // Optional speed-up — put PostgreSQL behind Hyperdrive (Storage & Databases →
-  // Hyperdrive in the dashboard), then uncomment this block with its ID:
+  // Hyperdrive pools Postgres connections across the whole fleet. Until the
+  // config exists the app falls back to the DATABASE_URL secret (src/lib/db.ts),
+  // so the first deploy needs nothing here. Create it with:
+  //   npx wrangler hyperdrive create leadra-db --connection-string="$DIRECT_URL"
+  // (point it at the DIRECT Neon endpoint, not the -pooler host), then
+  // uncomment with the id it prints:
   // "hyperdrive": [
-  //   { "binding": "HYPERDRIVE", "id": "<hyperdrive-id>" }
+  //   { "binding": "HYPERDRIVE", "id": "<hyperdrive-id>" },
   // ],
 
-  // Secrets (DATABASE_URL, keys, tokens) are added in the dashboard under
-  // Settings → Variables and Secrets — never in this file.
+  // Replaces the two entries in vercel.json — and fixes their cadence: Vercel's
+  // free plan capped crons at daily, which left inbound messages queued for up
+  // to 24h. Workers has no such cap, so drain runs every minute and the
+  // scheduled jobs hourly. Keep these expressions in sync with SCHEDULE_ROUTES
+  // in cloudflare-worker.ts — the map there dispatches on them.
+  "triggers": {
+    "crons": ["* * * * *", "0 * * * *"],
+  },
 }

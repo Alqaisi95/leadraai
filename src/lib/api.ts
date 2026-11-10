@@ -7,8 +7,12 @@ import { randomUUID } from "crypto";
 import { resolveContext, SESSION_COOKIE, CSRF_COOKIE } from "./auth";
 import type { TenantContext } from "./tenant";
 import { ForbiddenError } from "./rbac";
+import { EmailNotVerifiedError } from "./email-verification";
+import { PlanLimitError } from "./billing";
 import { TenantMismatchError } from "./tenant";
 import { checkRateLimit } from "./ratelimit";
+import { secretsMatch } from "./crypto";
+import { captureError } from "./monitoring";
 
 export type Handler = (req: NextRequest, ctx: TenantContext, correlationId: string) => Promise<NextResponse>;
 
@@ -24,13 +28,17 @@ export function withAuth(handler: Handler) {
       req.cookies.get(SESSION_COOKIE)?.value ??
       req.headers.get("authorization")?.replace(/^Bearer /, "") ??
       null;
-    const organizationId = req.headers.get("x-organization-id");
+    // header is the norm; the `org` query param exists for plain navigations
+    // (file downloads) that cannot set headers. Membership is still verified.
+    const organizationId =
+      req.headers.get("x-organization-id") ??
+      (req.method === "GET" ? new URL(req.url).searchParams.get("org") : null);
 
     const ctx = await resolveContext(token, organizationId);
     if (!ctx) return err(401, "UNAUTHORIZED", "Invalid or expired session", correlationId);
 
     // R1.4 — rate limit per user+org
-    const rl = await checkRateLimit(`u:${ctx.userId}:${ctx.organizationId}`, path);
+    const rl = checkRateLimit(`u:${ctx.userId}:${ctx.organizationId}`, path);
     if (!rl.ok) {
       const res = err(429, "RATE_LIMITED", "Too many requests", correlationId);
       res.headers.set("X-RateLimit-Limit", String(rl.limit));
@@ -43,7 +51,7 @@ export function withAuth(handler: Handler) {
     if (usedCookie && MUTATING.includes(req.method)) {
       const headerCsrf = req.headers.get("x-csrf-token");
       const cookieCsrf = req.cookies.get(CSRF_COOKIE)?.value;
-      if (!headerCsrf || !cookieCsrf || headerCsrf !== cookieCsrf) {
+      if (!headerCsrf || !cookieCsrf || !secretsMatch(headerCsrf, cookieCsrf)) {
         return err(403, "CSRF", "CSRF token mismatch", correlationId);
       }
     }
@@ -51,12 +59,15 @@ export function withAuth(handler: Handler) {
     try {
       const res = await handler(req, ctx, correlationId);
       res.headers.set("x-correlation-id", correlationId);
-      if (rl.remaining >= 0) res.headers.set("X-RateLimit-Remaining", String(rl.remaining));
+      res.headers.set("X-RateLimit-Remaining", String(rl.remaining));
       return res;
     } catch (e) {
       if (e instanceof ForbiddenError) return err(403, "FORBIDDEN", e.message, correlationId);
+      // Distinct code so the client can offer "resend" rather than just refusing.
+      if (e instanceof EmailNotVerifiedError) return err(403, "EMAIL_UNVERIFIED", e.message, correlationId);
+      if (e instanceof PlanLimitError) return err(422, "PLAN_LIMIT", e.message, correlationId);
       if (e instanceof TenantMismatchError) return err(404, "NOT_FOUND", "Resource not found", correlationId);
-      console.error(JSON.stringify({ correlationId, organizationId: ctx.organizationId, error: String(e) }));
+      captureError(e, { correlationId, organizationId: ctx.organizationId, route: path, method: req.method });
       return err(500, "INTERNAL", "Unexpected error", correlationId);
     }
   };

@@ -37,17 +37,36 @@ export async function matchUnitsForLead(leadId: string, limit = 5): Promise<Matc
     if (price !== null && (budgetMin !== null || budgetMax !== null)) {
       const min = budgetMin ?? 0;
       const max = budgetMax ?? budgetMin! * 1.2;
-      if (price >= min * 0.9 && price <= max * 1.1) { score += 40; reasons.push("ضمن الميزانية"); }
-      else if (price <= max * 1.25) { score += 15; reasons.push("قريب من الميزانية"); }
-      else { score -= 30; }
+      if (price >= min * 0.9 && price <= max * 1.1) {
+        score += 40;
+        reasons.push("ضمن الميزانية");
+      } else if (price <= max * 1.25) {
+        score += 15;
+        reasons.push("قريب من الميزانية");
+      } else {
+        score -= 30;
+      }
     }
-    if (lead.area && u.project.location?.includes(lead.area)) { score += 25; reasons.push(`في منطقة ${lead.area}`); }
-    if (lead.propertyType && u.unitType === lead.propertyType) { score += 20; reasons.push(`نوع مطلوب: ${u.unitType}`); }
-    if (lead.purpose === "INVEST" && u.bedrooms && u.bedrooms <= 2) { score += 5; reasons.push("مناسبة للاستثمار"); }
+    if (lead.area && u.project.location?.includes(lead.area)) {
+      score += 25;
+      reasons.push(`في منطقة ${lead.area}`);
+    }
+    if (lead.propertyType && u.unitType === lead.propertyType) {
+      score += 20;
+      reasons.push(`نوع مطلوب: ${u.unitType}`);
+    }
+    if (lead.purpose === "INVEST" && u.bedrooms && u.bedrooms <= 2) {
+      score += 5;
+      reasons.push("مناسبة للاستثمار");
+    }
 
     return {
-      unitId: u.id, unitNumber: u.unitNumber, projectName: u.project.name,
-      price, score, reasons,
+      unitId: u.id,
+      unitNumber: u.unitNumber,
+      projectName: u.project.name,
+      price,
+      score,
+      reasons,
     };
   });
 

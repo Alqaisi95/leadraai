@@ -1,356 +1,758 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import {
+  ArrowRight,
+  AtSign,
+  Building2,
+  CalendarDays,
+  CalendarPlus,
+  CheckSquare,
+  Combine,
+  Home,
+  MessagesSquare,
+  Pencil,
+  Phone,
+  Plus,
+  StickyNote,
+  TrendingUp,
+  UserRound,
+  Wallet,
+} from "lucide-react";
 import Shell from "@/components/Shell";
-import { Field, Notice, PURPOSE_LABEL, TEMPERATURE_LABEL, money, dateTime } from "@/components/ui";
+import { Card } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
+import { Badge, TempBadge } from "@/components/ui/Badge";
+import { Dialog } from "@/components/ui/Dialog";
+import { Field, Input, Select, Textarea } from "@/components/ui/Input";
+import { Skeleton } from "@/components/ui/Empty";
+import { useToast } from "@/components/ui/Toast";
 import { api } from "@/lib/client";
 
-const CONV_STATUS: Record<string, string> = {
-  AI_ACTIVE: "الذكاء الاصطناعي يرد", NEEDS_HUMAN: "يحتاج موظفاً", ASSIGNED_TO_AGENT: "محوّلة لموظف",
-  AGENT_ACTIVE: "موظف يرد", FOLLOW_UP_PENDING: "بانتظار متابعة", CLOSED: "مغلقة", SPAM: "مزعجة",
+const PURPOSE: Record<string, string> = {
+  BUY: "شراء",
+  RENT: "إيجار",
+  INVEST: "استثمار",
+  UNKNOWN: "غير محدد",
 };
-const SENDER: Record<string, string> = { CUSTOMER: "العميل", AI: "الذكاء الاصطناعي", AGENT: "موظف", SYSTEM: "النظام" };
+const TASK_STATUS: Record<string, string> = { OPEN: "مفتوحة", DONE: "منجزة", CANCELLED: "ملغاة" };
+const APPT_STATUS: Record<string, string> = {
+  SCHEDULED: "مجدول",
+  CONFIRMED: "مؤكد",
+  COMPLETED: "تمت",
+  NO_SHOW: "لم يحضر",
+  CANCELLED: "ملغي",
+};
 
-export default function LeadPage() {
+function InfoRow({ icon, label, value }: { icon: React.ReactNode; label: string; value?: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2.5 py-2 text-[13px]">
+      <span className="grid size-7 shrink-0 place-items-center rounded-md bg-primary-soft text-primary">
+        {icon}
+      </span>
+      <span className="w-24 shrink-0 text-dim">{label}</span>
+      <span className="min-w-0 flex-1 font-medium">{value ?? <span className="text-dim">—</span>}</span>
+    </div>
+  );
+}
+
+export default function LeadProfilePage() {
   const { id } = useParams<{ id: string }>();
   const [lead, setLead] = useState<any>(null);
-  const [error, setError] = useState("");
-  const [msg, setMsg] = useState("");
-
-  const load = useCallback(async () => setLead(await api(`/api/leads/${id}`)), [id]);
-  useEffect(() => { load().catch((e) => setError(e.code === "NOT_FOUND" ? "العميل غير موجود أو غير مسند إليك" : e.message)); }, [load]);
-
-  if (!lead) return <Shell><Notice kind="err">{error}</Notice>{!error && <p className="muted">جارٍ التحميل…</p>}</Shell>;
-
-  const name = lead.fullName ?? lead.igUsername ?? "عميل";
-  const opp = lead.opportunities?.[0];
-
-  return (
-    <Shell>
-      <div className="toolbar">
-        <div>
-          <a href="/leads" className="small muted">→ العملاء والمسار</a>
-          <h1 className="page-title" style={{ marginTop: 4 }}>{name}</h1>
-        </div>
-        <div className="row">
-          <span className={`score-badge score-${lead.temperature}`}>{lead.score} · {TEMPERATURE_LABEL[lead.temperature]}</span>
-          {opp && <span className="chip">{opp.stage.name}</span>}
-          {lead.igUsername && <span className="chip ltr">@{lead.igUsername}</span>}
-        </div>
-      </div>
-      <Notice kind="err">{error}</Notice>
-      <Notice kind="ok">{msg}</Notice>
-
-      <div className="two-col">
-        <div className="stack">
-          <Conversation conversation={lead.conversation} />
-          {lead.conversation && <AiDecisions conversationId={lead.conversation.id} />}
-          <Notes lead={lead} onAdded={async () => { await load(); }} />
-          <Tasks lead={lead} onChanged={load} />
-          <ScoreHistory events={lead.scoreEvents} />
-        </div>
-        <div className="stack">
-          <Details lead={lead} onSaved={async () => { setMsg("تم حفظ البيانات"); await load(); }} onError={setError} />
-          <Matches leadId={lead.id} />
-          <Appointments lead={lead} onChanged={async () => { setMsg("أُضيف الموعد"); await load(); }} />
-        </div>
-      </div>
-    </Shell>
-  );
-}
-
-function Conversation({ conversation }: { conversation: any }) {
-  if (!conversation) return <div className="card muted small">لا توجد محادثة Instagram مرتبطة — أُضيف هذا العميل يدوياً.</div>;
-  return (
-    <div className="card">
-      <div className="spread" style={{ marginBottom: 10 }}>
-        <div className="section-title" style={{ marginBottom: 0 }}>المحادثة</div>
-        <div className="row">
-          <span className={`status-pill status-${conversation.status}`}>{CONV_STATUS[conversation.status] ?? conversation.status}</span>
-          <a className="btn sm ghost" href={`/inbox?c=${conversation.id}`}>فتح في صندوق المحادثات</a>
-        </div>
-      </div>
-      <div className="thread-messages" style={{ maxHeight: 420, padding: 4 }}>
-        {conversation.messages.length === 0 && <p className="muted small">لا رسائل.</p>}
-        {conversation.messages.map((m: any) => (
-          <div key={m.id} className={`bubble ${m.senderType}`}>
-            <div style={{ whiteSpace: "pre-wrap" }}>{m.body ?? "[مرفق]"}</div>
-            <div className="meta">{SENDER[m.senderType]} · {dateTime(m.createdAt)}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Details({ lead, onSaved, onError }: { lead: any; onSaved: () => void; onError: (e: string) => void }) {
-  const [projects, setProjects] = useState<any[]>([]);
+  const [duplicates, setDuplicates] = useState<any[]>([]);
+  const [matches, setMatches] = useState<any[] | null>(null);
   const [members, setMembers] = useState<any[]>([]);
-  const init = () => ({
-    fullName: lead.fullName ?? "", phone: lead.phone ?? "", email: lead.email ?? "", purpose: lead.purpose,
-    city: lead.city ?? "", area: lead.area ?? "", propertyType: lead.propertyType ?? "",
-    budgetMin: lead.budgetMin ?? "", budgetMax: lead.budgetMax ?? "", paymentMethod: lead.paymentMethod ?? "",
-    buyTimeframe: lead.buyTimeframe ?? "", nextStep: lead.nextStep ?? "",
-    interestedProjectId: lead.interestedProjectId ?? "", ownerMemberId: lead.ownerMemberId ?? "",
-  });
-  const [f, setF] = useState(init);
-  const [dirty, setDirty] = useState(false);
-  useEffect(() => { setF(init()); setDirty(false); }, [lead]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [projects, setProjects] = useState<any[]>([]);
+  const [error, setError] = useState("");
+
+  const [edit, setEdit] = useState(false);
+  const [form, setForm] = useState<any>({});
+  const [note, setNote] = useState("");
+  const [taskDialog, setTaskDialog] = useState(false);
+  const [apptDialog, setApptDialog] = useState(false);
+  const [mergeWith, setMergeWith] = useState<any>(null);
+  const [quick, setQuick] = useState<any>({});
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  function load() {
+    return api(`/api/leads/${id}`)
+      .then((d) => {
+        setLead(d.lead);
+        setDuplicates(d.duplicates ?? []);
+      })
+      .catch((e) => setError(e.message));
+  }
+
   useEffect(() => {
-    api("/api/projects?pageSize=100").then((r) => setProjects(r.items)).catch(() => {});
-    if (lead.canAssign) api("/api/members/assignable").then((r) => setMembers(r.items)).catch(() => {});
-  }, [lead.canAssign]);
-  const set = (k: string) => (e: any) => { setF({ ...f, [k]: e.target.value }); setDirty(true); };
+    load();
+    api(`/api/leads/${id}/matches`)
+      .then((d) => setMatches(d.items))
+      .catch(() => setMatches([]));
+    api("/api/members")
+      .then((d) => setMembers(d.items.filter((m: any) => m.status === "ACTIVE")))
+      .catch(() => {});
+    api("/api/projects")
+      .then((d) => setProjects(d.items))
+      .catch(() => {});
+  }, [id]);
+
+  function openEdit() {
+    setForm({
+      fullName: lead.fullName ?? "",
+      phone: lead.phone ?? "",
+      email: lead.email ?? "",
+      purpose: lead.purpose,
+      city: lead.city ?? "",
+      area: lead.area ?? "",
+      propertyType: lead.propertyType ?? "",
+      budgetMin: lead.budgetMin ? String(Number(lead.budgetMin)) : "",
+      budgetMax: lead.budgetMax ? String(Number(lead.budgetMax)) : "",
+      buyTimeframe: lead.buyTimeframe ?? "",
+      nextStep: lead.nextStep ?? "",
+      interestedProjectId: lead.interestedProjectId ?? "",
+      ownerMemberId: lead.ownerMemberId ?? "",
+    });
+    setEdit(true);
+  }
+
+  const numOrNull = (v: string) => (v === "" ? null : Number(v));
 
   async function save() {
-    const num = (v: any) => (v === "" || v === null ? null : Number(v));
-    const body: any = {
-      ...f, budgetMin: num(f.budgetMin), budgetMax: num(f.budgetMax),
-      interestedProjectId: f.interestedProjectId || null,
-    };
-    if (lead.canAssign) body.ownerMemberId = f.ownerMemberId || null; else delete body.ownerMemberId;
-    try { await api(`/api/leads/${lead.id}`, { method: "PATCH", body: JSON.stringify(body) }); onSaved(); }
-    catch (e: any) { onError(e.message); }
-  }
-
-  return (
-    <div className="card">
-      <div className="section-title">البيانات</div>
-      <div className="stack" style={{ gap: 10 }}>
-        <Field label="الاسم"><input className="input" value={f.fullName} onChange={set("fullName")} /></Field>
-        <Field label="الهاتف"><input className="input ltr" value={f.phone} onChange={set("phone")} /></Field>
-        <Field label="البريد"><input className="input ltr" value={f.email} onChange={set("email")} /></Field>
-        <Field label="الغرض">
-          <select className="input" value={f.purpose} onChange={set("purpose")}>
-            {Object.entries(PURPOSE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-          </select>
-        </Field>
-        <Field label="المشروع المهتم به">
-          <select className="input" value={f.interestedProjectId} onChange={set("interestedProjectId")}>
-            <option value="">—</option>
-            {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </Field>
-        <div className="form-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
-          <Field label="المدينة"><input className="input" value={f.city} onChange={set("city")} /></Field>
-          <Field label="المنطقة"><input className="input" value={f.area} onChange={set("area")} /></Field>
-          <Field label="الميزانية من"><input className="input ltr" inputMode="decimal" value={f.budgetMin} onChange={set("budgetMin")} /></Field>
-          <Field label="إلى"><input className="input ltr" inputMode="decimal" value={f.budgetMax} onChange={set("budgetMax")} /></Field>
-          <Field label="نوع العقار"><input className="input" value={f.propertyType} onChange={set("propertyType")} /></Field>
-          <Field label="طريقة الدفع"><input className="input" value={f.paymentMethod} onChange={set("paymentMethod")} /></Field>
-        </div>
-        <Field label="موعد الشراء المتوقع"><input className="input" value={f.buyTimeframe} onChange={set("buyTimeframe")} /></Field>
-        <Field label="الخطوة التالية"><input className="input" value={f.nextStep} onChange={set("nextStep")} /></Field>
-        {lead.canAssign ? (
-          <Field label="الموظف المسؤول">
-            <select className="input" value={f.ownerMemberId} onChange={set("ownerMemberId")}>
-              <option value="">غير مسند</option>
-              {members.map((m) => <option key={m.id} value={m.id}>{m.fullName}</option>)}
-            </select>
-          </Field>
-        ) : <p className="small muted">المسؤول: {lead.owner?.user.fullName ?? "غير مسند"}</p>}
-        {lead.campaign && <p className="small muted">المصدر: {lead.campaign.name}</p>}
-      </div>
-      <div className="form-actions"><button className="btn" disabled={!dirty} onClick={save}>حفظ</button></div>
-    </div>
-  );
-}
-
-function Matches({ leadId }: { leadId: string }) {
-  const [items, setItems] = useState<any[] | null>(null);
-  useEffect(() => { api(`/api/leads/${leadId}/matches`).then((r) => setItems(r.items)).catch(() => setItems([])); }, [leadId]);
-  return (
-    <div className="card">
-      <div className="section-title">وحدات مناسبة</div>
-      {items === null ? <p className="muted small">جارٍ البحث…</p> : items.length === 0 ? (
-        <p className="muted small">لا وحدات متاحة تطابق بياناته بعد. أكمل الميزانية والمنطقة ونوع العقار.</p>
-      ) : (
-        <div className="stack" style={{ gap: 8 }}>
-          {items.map((m) => (
-            <div key={m.unitId} className="timeline"><div className="item">
-              <div className="spread"><strong>{m.projectName} · {m.unitNumber}</strong><span className="ltr small">{money(m.price)}</span></div>
-              <div className="small muted">{m.reasons.join(" · ")}</div>
-            </div></div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Notes({ lead, onAdded }: { lead: any; onAdded: () => void }) {
-  const [body, setBody] = useState("");
-  const [error, setError] = useState("");
-  async function add() {
-    setError("");
-    try { await api(`/api/leads/${lead.id}/notes`, { method: "POST", body: JSON.stringify({ body }) }); setBody(""); onAdded(); }
-    catch (e: any) { setError(e.message); }
-  }
-  return (
-    <div className="card">
-      <div className="section-title">الملاحظات</div>
-      <div className="row" style={{ marginBottom: 10 }}>
-        <input className="input" style={{ flex: 1 }} placeholder="اكتب ملاحظة عن العميل…" value={body}
-          onChange={(e) => setBody(e.target.value)} onKeyDown={(e) => e.key === "Enter" && body.trim() && add()} />
-        <button className="btn" disabled={!body.trim()} onClick={add}>إضافة</button>
-      </div>
-      <Notice kind="err">{error}</Notice>
-      <div className="timeline">
-        {lead.notes.length === 0 && <p className="muted small">لا ملاحظات بعد.</p>}
-        {lead.notes.map((n: any) => (
-          <div key={n.id} className="item">
-            <div className="small" style={{ whiteSpace: "pre-wrap" }}>{n.body}</div>
-            <div className="small muted">{n.authorName} · {dateTime(n.createdAt)}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Tasks({ lead, onChanged }: { lead: any; onChanged: () => void }) {
-  const [title, setTitle] = useState("");
-  const [dueAt, setDueAt] = useState("");
-  const [error, setError] = useState("");
-  async function add() {
-    setError("");
+    setBusy(true);
     try {
-      await api("/api/tasks", { method: "POST", body: JSON.stringify({ title, leadId: lead.id, ...(dueAt ? { dueAt } : {}) }) });
-      setTitle(""); setDueAt(""); onChanged();
-    } catch (e: any) { setError(e.message); }
+      await api(`/api/leads/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          fullName: form.fullName || null,
+          phone: form.phone || null,
+          email: form.email || null,
+          purpose: form.purpose,
+          city: form.city || null,
+          area: form.area || null,
+          propertyType: form.propertyType || null,
+          budgetMin: numOrNull(form.budgetMin),
+          budgetMax: numOrNull(form.budgetMax),
+          buyTimeframe: form.buyTimeframe || null,
+          nextStep: form.nextStep || null,
+          interestedProjectId: form.interestedProjectId || null,
+          ownerMemberId: form.ownerMemberId || null,
+        }),
+      });
+      toast("success", "تم حفظ بيانات العميل");
+      setEdit(false);
+      await load();
+      api(`/api/leads/${id}/matches`)
+        .then((d) => setMatches(d.items))
+        .catch(() => {});
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
   }
-  async function toggle(t: any) {
-    try { await api(`/api/tasks/${t.id}`, { method: "PATCH", body: JSON.stringify({ status: t.status === "DONE" ? "OPEN" : "DONE" }) }); onChanged(); }
-    catch (e: any) { setError(e.message); }
-  }
-  return (
-    <div className="card">
-      <div className="section-title">المهام</div>
-      <div className="row" style={{ marginBottom: 10 }}>
-        <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="مثال: إرسال مخطط الشقة" value={title} onChange={(e) => setTitle(e.target.value)} />
-        <input className="input" style={{ width: "auto" }} type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} aria-label="الموعد" />
-        <button className="btn" disabled={title.trim().length < 2} onClick={add}>إضافة</button>
-      </div>
-      <Notice kind="err">{error}</Notice>
-      {lead.tasks.length === 0 && <p className="muted small">لا مهام.</p>}
-      {lead.tasks.map((t: any) => (
-        <label key={t.id} className="row small" style={{ padding: "5px 0", borderBottom: "1px solid var(--line)" }}>
-          <input type="checkbox" checked={t.status === "DONE"} onChange={() => toggle(t)} />
-          <span style={{ textDecoration: t.status === "DONE" ? "line-through" : undefined, flex: 1 }}>{t.title}</span>
-          {t.dueAt && <span className={t.status !== "DONE" && new Date(t.dueAt) < new Date() ? "error-text" : "muted"} style={{ marginTop: 0 }}>{dateTime(t.dueAt)}</span>}
-        </label>
-      ))}
-    </div>
-  );
-}
 
-function Appointments({ lead, onChanged }: { lead: any; onChanged: () => void }) {
-  const [startsAt, setStartsAt] = useState("");
-  const [location, setLocation] = useState("");
-  const [error, setError] = useState("");
-  async function add() {
-    setError("");
+  async function addNote() {
+    if (!note.trim()) return;
+    setBusy(true);
+    try {
+      await api(`/api/leads/${id}/notes`, { method: "POST", body: JSON.stringify({ body: note.trim() }) });
+      setNote("");
+      await load();
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addTask() {
+    setBusy(true);
+    try {
+      await api("/api/tasks", {
+        method: "POST",
+        body: JSON.stringify({
+          title: quick.title,
+          leadId: id,
+          priority: quick.priority ?? "MEDIUM",
+          dueAt: quick.dueAt ? new Date(quick.dueAt).toISOString() : undefined,
+        }),
+      });
+      toast("success", "تمت إضافة المهمة");
+      setTaskDialog(false);
+      setQuick({});
+      await load();
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addAppointment() {
+    setBusy(true);
     try {
       await api("/api/appointments", {
         method: "POST",
-        body: JSON.stringify({ leadId: lead.id, startsAt, ...(location ? { location } : {}), ...(lead.interestedProjectId ? { projectId: lead.interestedProjectId } : {}) }),
+        body: JSON.stringify({
+          leadId: id,
+          startsAt: new Date(quick.startsAt).toISOString(),
+          location: quick.location || undefined,
+          projectId: quick.projectId || undefined,
+        }),
       });
-      setStartsAt(""); setLocation(""); onChanged();
-    } catch (e: any) { setError(e.message); }
+      toast("success", "تم جدولة الموعد");
+      setApptDialog(false);
+      setQuick({});
+      await load();
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
   }
-  return (
-    <div className="card">
-      <div className="section-title">المواعيد</div>
-      {lead.appointments.map((a: any) => (
-        <div key={a.id} className="small" style={{ padding: "5px 0", borderBottom: "1px solid var(--line)" }}>
-          {dateTime(a.startsAt)}{a.project ? ` · ${a.project.name}` : ""}{a.location ? ` · ${a.location}` : ""}
-        </div>
-      ))}
-      <div className="stack" style={{ gap: 8, marginTop: 10 }}>
-        <input className="input" type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} aria-label="موعد الزيارة" />
-        <input className="input" placeholder="المكان (اختياري)" value={location} onChange={(e) => setLocation(e.target.value)} />
-        <button className="btn" disabled={!startsAt} onClick={add}>حجز زيارة</button>
-      </div>
-      <Notice kind="err">{error}</Notice>
-      <p className="small muted" style={{ marginTop: 6 }}>حجز الزيارة يرفع درجة العميل تلقائياً.</p>
-    </div>
-  );
-}
 
-function ScoreHistory({ events }: { events: any[] }) {
+  async function merge() {
+    if (!mergeWith) return;
+    setBusy(true);
+    try {
+      await api(`/api/leads/${id}/merge`, {
+        method: "POST",
+        body: JSON.stringify({ duplicateLeadId: mergeWith.id }),
+      });
+      toast("success", "تم دمج السجلين");
+      setMergeWith(null);
+      await load();
+    } catch (e: any) {
+      toast("error", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const opp = lead?.opportunities?.[0];
+  const budget =
+    lead?.budgetMin || lead?.budgetMax
+      ? `${lead.budgetMin ? Number(lead.budgetMin).toLocaleString() : "؟"} – ${lead.budgetMax ? Number(lead.budgetMax).toLocaleString() : "؟"} $`
+      : null;
+
   return (
-    <div className="card">
-      <div className="section-title">لماذا هذه الدرجة؟</div>
-      {events.length === 0 ? <p className="muted small">لم تُسجَّل أحداث تقييم بعد.</p> : (
-        <div className="timeline">
-          {events.map((e) => (
-            <div key={e.id} className="item spread small">
-              <span>{e.reason}</span>
-              <span className="row" style={{ gap: 8 }}>
-                <strong className="ltr" style={{ color: e.points >= 0 ? "var(--accent)" : "var(--hot)" }}>{e.points > 0 ? `+${e.points}` : e.points}</strong>
-                <span className="muted">← {e.scoreAfter}</span>
-                <span className="muted">{dateTime(e.createdAt)}</span>
+    <Shell>
+      <a
+        href="/leads"
+        className="mb-3 inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-dim hover:text-primary"
+      >
+        <ArrowRight size={14} /> رجوع إلى المسار
+      </a>
+
+      {error && <p className="text-[13px] font-medium text-danger">{error}</p>}
+      {!lead && !error && (
+        <div className="grid gap-3 lg:grid-cols-[1fr_1.4fr]">
+          <Skeleton className="h-72" />
+          <Skeleton className="h-72" />
+        </div>
+      )}
+
+      {lead && (
+        <>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3.5">
+              <span className="grid size-12 place-items-center rounded-full bg-primary text-lg font-bold text-primary-fg">
+                {(lead.fullName ?? lead.igUsername ?? "؟").slice(0, 1)}
               </span>
+              <div>
+                <h1 className="text-[19px] font-bold leading-tight">
+                  {lead.fullName ?? lead.igUsername ?? "عميل"}
+                </h1>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <TempBadge temperature={lead.temperature} score={lead.score} />
+                  {opp && (
+                    <Badge tone={opp.stage.isWon ? "primary" : opp.stage.isLost ? "danger" : "info"}>
+                      {opp.stage.name}
+                    </Badge>
+                  )}
+                  <Badge>{PURPOSE[lead.purpose] ?? lead.purpose}</Badge>
+                  <span className="flex items-center gap-1 text-[12px] text-dim">
+                    <UserRound size={11} />
+                    {lead.owner?.user?.fullName ?? "غير مخصص"}
+                  </span>
+                </div>
+              </div>
             </div>
-          ))}
-        </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => setTaskDialog(true)}>
+                <CheckSquare size={14} /> مهمة
+              </Button>
+              <Button variant="outline" onClick={() => setApptDialog(true)}>
+                <CalendarPlus size={14} /> موعد
+              </Button>
+              {lead.conversation && (
+                <a href="/inbox">
+                  <Button variant="outline">
+                    <MessagesSquare size={14} /> المحادثة
+                  </Button>
+                </a>
+              )}
+              <Button onClick={openEdit}>
+                <Pencil size={14} /> تعديل
+              </Button>
+            </div>
+          </div>
+
+          {lead.nextStep && (
+            <Card className="mb-3 border-s-4 border-s-warn px-4 py-2.5">
+              <span className="text-[12px] font-bold text-warn">الخطوة التالية</span>
+              <p className="mt-0.5 text-[13.5px]">{lead.nextStep}</p>
+            </Card>
+          )}
+
+          {duplicates.length > 0 && (
+            <Card className="mb-3 border-s-4 border-s-info px-4 py-3">
+              <div className="flex items-center gap-2 text-[12.5px] font-bold text-info">
+                <Combine size={14} /> سجلات مكرّرة محتملة ({duplicates.length})
+              </div>
+              <div className="mt-2 grid gap-1.5">
+                {duplicates.map((d) => (
+                  <div key={d.id} className="flex items-center justify-between gap-3 text-[12.5px]">
+                    <span>
+                      <a href={`/leads/${d.id}`} className="font-semibold hover:text-primary">
+                        {d.fullName ?? d.igUsername ?? "عميل"}
+                      </a>
+                      <span className="ms-2 text-dim">
+                        تطابق في {d.matchedOn === "phone" ? "الهاتف" : d.matchedOn}
+                      </span>
+                    </span>
+                    <Button size="sm" variant="outline" onClick={() => setMergeWith(d)}>
+                      دمج هنا
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          <div className="grid items-start gap-3 lg:grid-cols-[1fr_1.4fr]">
+            <div className="grid gap-3">
+              <Card className="px-4 py-2.5">
+                <h2 className="border-b border-line pb-2 pt-1 text-[13.5px] font-bold">بيانات العميل</h2>
+                <InfoRow
+                  icon={<Phone size={13} />}
+                  label="الهاتف"
+                  value={lead.phone && <span dir="ltr">{lead.phone}</span>}
+                />
+                <InfoRow
+                  icon={<AtSign size={13} />}
+                  label="Instagram"
+                  value={lead.igUsername && <span dir="ltr">@{lead.igUsername}</span>}
+                />
+                <InfoRow icon={<Wallet size={13} />} label="الميزانية" value={budget} />
+                <InfoRow
+                  icon={<Home size={13} />}
+                  label="المنطقة"
+                  value={[lead.city, lead.area].filter(Boolean).join(" — ") || null}
+                />
+                <InfoRow
+                  icon={<Building2 size={13} />}
+                  label="المشروع"
+                  value={lead.interestedProject?.name}
+                />
+                <InfoRow icon={<CalendarDays size={13} />} label="موعد الشراء" value={lead.buyTimeframe} />
+              </Card>
+
+              <Card className="p-4">
+                <h2 className="mb-2.5 text-[13.5px] font-bold">الوحدات المطابقة</h2>
+                {!matches && <Skeleton className="h-16" />}
+                {matches?.length === 0 && (
+                  <p className="text-[12.5px] text-dim">لا وحدات مطابقة — أكمل الميزانية/المنطقة.</p>
+                )}
+                <div className="grid gap-2">
+                  {matches?.map((m) => (
+                    <div key={m.unitId} className="rounded-lg border border-line px-3 py-2 text-[12.5px]">
+                      <div className="flex items-center justify-between font-bold">
+                        <span>
+                          {m.projectName} — {m.unitNumber}
+                        </span>
+                        <span>{m.price ? m.price.toLocaleString() + "$" : "—"}</span>
+                      </div>
+                      <div className="mt-0.5 text-dim">{m.reasons.join("، ")}</div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </div>
+
+            <div className="grid gap-3">
+              <Card className="p-4">
+                <h2 className="mb-2.5 flex items-center gap-2 text-[13.5px] font-bold">
+                  <StickyNote size={15} className="text-primary" /> الملاحظات الداخلية
+                </h2>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="سجّل ما دار في المكالمة…"
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && addNote()}
+                  />
+                  <Button
+                    className="shrink-0"
+                    loading={busy && !!note}
+                    disabled={!note.trim()}
+                    onClick={addNote}
+                  >
+                    <Plus size={14} /> إضافة
+                  </Button>
+                </div>
+                {lead.notes?.length === 0 && <p className="mt-3 text-[12.5px] text-dim">لا ملاحظات بعد.</p>}
+                <div className="mt-3 grid gap-2">
+                  {lead.notes?.map((n: any) => (
+                    <div key={n.id} className="rounded-lg border border-line px-3 py-2 text-[12.5px]">
+                      <p className="whitespace-pre-wrap leading-relaxed">{n.body}</p>
+                      <div className="mt-1 text-[11px] text-dim">
+                        {n.author} · {new Date(n.createdAt).toLocaleString("ar-IQ")}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+
+              <Card className="p-4">
+                <h2 className="mb-3 flex items-center gap-2 text-[13.5px] font-bold">
+                  <TrendingUp size={15} className="text-primary" /> سجل النقاط
+                </h2>
+                {lead.scoreEvents.length === 0 && <p className="text-[12.5px] text-dim">لا أحداث بعد.</p>}
+                <div className="grid gap-0.5">
+                  {lead.scoreEvents.map((e: any) => (
+                    <div
+                      key={e.id}
+                      className="flex items-center gap-3 border-b border-line py-2 text-[12.5px] last:border-0"
+                    >
+                      <span
+                        className={`w-11 shrink-0 rounded-md px-1.5 py-0.5 text-center font-bold ${
+                          e.points >= 0 ? "bg-primary-soft text-primary" : "bg-danger-soft text-danger"
+                        }`}
+                      >
+                        {e.points > 0 ? `+${e.points}` : e.points}
+                      </span>
+                      <span className="flex-1">{e.reason}</span>
+                      <span className="shrink-0 text-[11px] text-dim">
+                        {new Date(e.createdAt).toLocaleDateString("ar-IQ")}
+                      </span>
+                      <span className="w-10 shrink-0 text-end text-[11px] font-bold text-dim">
+                        {e.scoreAfter}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <Card className="p-4">
+                  <h2 className="mb-2.5 flex items-center gap-2 text-[13.5px] font-bold">
+                    <CheckSquare size={15} className="text-primary" /> المهام
+                  </h2>
+                  {lead.tasks.length === 0 && <p className="text-[12.5px] text-dim">لا مهام مرتبطة.</p>}
+                  <div className="grid gap-2">
+                    {lead.tasks.map((t: any) => (
+                      <div key={t.id} className="rounded-lg border border-line px-3 py-2 text-[12.5px]">
+                        <div className="flex items-center justify-between gap-2">
+                          <span
+                            className={`font-semibold ${t.status === "DONE" ? "text-dim line-through" : ""}`}
+                          >
+                            {t.title}
+                          </span>
+                          <Badge tone={t.status === "DONE" ? "primary" : "neutral"}>
+                            {TASK_STATUS[t.status] ?? t.status}
+                          </Badge>
+                        </div>
+                        <div className="mt-1 text-[11px] text-dim">
+                          {t.assignee ? t.assignee.user.fullName : "غير مخصصة"}
+                          {t.dueAt && ` · تستحق ${new Date(t.dueAt).toLocaleDateString("ar-IQ")}`}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+
+                <Card className="p-4">
+                  <h2 className="mb-2.5 flex items-center gap-2 text-[13.5px] font-bold">
+                    <CalendarDays size={15} className="text-primary" /> المواعيد
+                  </h2>
+                  {lead.appointments.length === 0 && <p className="text-[12.5px] text-dim">لا مواعيد.</p>}
+                  <div className="grid gap-2">
+                    {lead.appointments.map((a: any) => (
+                      <div key={a.id} className="rounded-lg border border-line px-3 py-2 text-[12.5px]">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold">
+                            {new Date(a.startsAt).toLocaleString("ar-IQ", {
+                              dateStyle: "medium",
+                              timeStyle: "short",
+                            })}
+                          </span>
+                          <Badge
+                            tone={
+                              a.status === "COMPLETED"
+                                ? "primary"
+                                : a.status === "CANCELLED" || a.status === "NO_SHOW"
+                                  ? "danger"
+                                  : "info"
+                            }
+                          >
+                            {APPT_STATUS[a.status] ?? a.status}
+                          </Badge>
+                        </div>
+                        <div className="mt-1 text-[11px] text-dim">
+                          {a.member.user.fullName}
+                          {a.location && ` · ${a.location}`}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              </div>
+            </div>
+          </div>
+        </>
       )}
-    </div>
-  );
-}
 
-const REASON: Record<string, string> = {
-  price_guard: "حارس الأسعار منع الرد — ذكر سعراً غير موجود في المخزون",
-  low_confidence: "ثقة منخفضة في الجواب",
-  human_requested: "العميل طلب موظفاً",
-  complaint: "شكوى أو انزعاج",
-  contractual: "سؤال تعاقدي أو قانوني",
-  model_decision: "قرر الذكاء الاصطناعي التحويل",
-  ai_failure: "تعذّر الاتصال بالنموذج",
-  parse_failure: "رد غير صالح من النموذج",
-};
-
-function AiDecisions({ conversationId }: { conversationId: string }) {
-  const [items, setItems] = useState<any[] | null>(null);
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (open && items === null) api(`/api/conversations/${conversationId}/ai-runs`).then((r) => setItems(r.items)).catch(() => setItems([]));
-  }, [open, items, conversationId]);
-
-  return (
-    <div className="card">
-      <button className="spread" style={{ width: "100%", background: "none", border: 0, padding: 0 }} onClick={() => setOpen(!open)} aria-expanded={open}>
-        <span className="section-title" style={{ marginBottom: 0 }}>لماذا ردّ الذكاء الاصطناعي هكذا؟</span>
-        <span className="muted">{open ? "▲" : "▼"}</span>
-      </button>
-      {open && (
-        <div className="stack" style={{ marginTop: 12 }}>
-          {items === null && <p className="muted small">جارٍ التحميل…</p>}
-          {items?.length === 0 && <p className="muted small">لم يرد الذكاء الاصطناعي في هذه المحادثة بعد.</p>}
-          {items?.map((r) => (
-            <div key={r.id} className="timeline"><div className="item small">
-              <div className="spread">
-                <span className="muted">{dateTime(r.createdAt)}</span>
-                <span className="row" style={{ gap: 6 }}>
-                  {r.confidence !== null && <span className="chip">ثقة {Math.round(r.confidence * 100)}%</span>}
-                  <span className={`chip ${r.handedOff ? "unit-TEMP_RESERVED" : "unit-AVAILABLE"}`}>{r.handedOff ? "حُوّلت لموظف" : "ردّ تلقائياً"}</span>
-                </span>
-              </div>
-              {r.input && <div style={{ marginTop: 4 }}><span className="muted">السؤال: </span>{r.input}</div>}
-              {r.output && <div><span className="muted">{r.handedOff ? "المسودة (لم تُرسل): " : "الرد: "}</span>{r.output}</div>}
-              {r.handedOff && <div style={{ color: "var(--warm)" }}>السبب: {REASON[r.reason] ?? r.reason ?? "—"}</div>}
-              {r.error && <div className="error-text">خطأ: {r.error}</div>}
-              <div className="muted">
-                المصادر: {r.sources.length ? r.sources.join("، ") : "لا شيء — أجاب من بيانات المخزون فقط أو لم يجد ما يطابق"}
-                {r.terms.length > 0 && <> · بحث عن: {r.terms.join("، ")}</>}
-              </div>
-              <div className="muted ltr" style={{ textAlign: "right", fontSize: 11 }}>
-                {[r.prompt, r.model, r.tokens ? `${r.tokens} tokens` : null, r.latencyMs ? `${r.latencyMs} ms` : null].filter(Boolean).join(" · ")}
-              </div>
-            </div></div>
-          ))}
+      {/* edit */}
+      <Dialog
+        open={edit}
+        onClose={() => setEdit(false)}
+        title="تعديل بيانات العميل"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setEdit(false)}>
+              إلغاء
+            </Button>
+            <Button loading={busy} onClick={save}>
+              حفظ
+            </Button>
+          </>
+        }
+      >
+        <div className="grid max-h-[60vh] gap-3 overflow-y-auto pe-1">
+          <Field label="الاسم">
+            <Input
+              value={form.fullName ?? ""}
+              onChange={(e) => setForm({ ...form, fullName: e.target.value })}
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="الهاتف">
+              <Input
+                dir="ltr"
+                className="text-left"
+                value={form.phone ?? ""}
+                onChange={(e) => setForm({ ...form, phone: e.target.value })}
+              />
+            </Field>
+            <Field label="البريد">
+              <Input
+                dir="ltr"
+                className="text-left"
+                value={form.email ?? ""}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+              />
+            </Field>
+            <Field label="الغرض">
+              <Select value={form.purpose} onChange={(e) => setForm({ ...form, purpose: e.target.value })}>
+                {Object.entries(PURPOSE).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="نوع العقار">
+              <Input
+                value={form.propertyType ?? ""}
+                onChange={(e) => setForm({ ...form, propertyType: e.target.value })}
+                placeholder="شقة"
+              />
+            </Field>
+            <Field label="المدينة">
+              <Input value={form.city ?? ""} onChange={(e) => setForm({ ...form, city: e.target.value })} />
+            </Field>
+            <Field label="المنطقة">
+              <Input value={form.area ?? ""} onChange={(e) => setForm({ ...form, area: e.target.value })} />
+            </Field>
+            <Field label="الميزانية من ($)">
+              <Input
+                inputMode="numeric"
+                value={form.budgetMin ?? ""}
+                onChange={(e) => setForm({ ...form, budgetMin: e.target.value })}
+              />
+            </Field>
+            <Field label="إلى ($)">
+              <Input
+                inputMode="numeric"
+                value={form.budgetMax ?? ""}
+                onChange={(e) => setForm({ ...form, budgetMax: e.target.value })}
+              />
+            </Field>
+          </div>
+          <Field label="موعد الشراء">
+            <Input
+              value={form.buyTimeframe ?? ""}
+              onChange={(e) => setForm({ ...form, buyTimeframe: e.target.value })}
+              placeholder="خلال 3 أشهر"
+            />
+          </Field>
+          <Field label="المشروع المهتم به">
+            <Select
+              value={form.interestedProjectId ?? ""}
+              onChange={(e) => setForm({ ...form, interestedProjectId: e.target.value })}
+            >
+              <option value="">غير محدد</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="المسؤول">
+            <Select
+              value={form.ownerMemberId ?? ""}
+              onChange={(e) => setForm({ ...form, ownerMemberId: e.target.value })}
+            >
+              <option value="">غير مخصص</option>
+              {members.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.user.fullName}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="الخطوة التالية">
+            <Textarea
+              className="min-h-16"
+              value={form.nextStep ?? ""}
+              onChange={(e) => setForm({ ...form, nextStep: e.target.value })}
+              placeholder="اتصال يوم الخميس لتأكيد الزيارة"
+            />
+          </Field>
         </div>
-      )}
-    </div>
+      </Dialog>
+
+      {/* quick task */}
+      <Dialog
+        open={taskDialog}
+        onClose={() => setTaskDialog(false)}
+        title="مهمة مرتبطة بالعميل"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setTaskDialog(false)}>
+              إلغاء
+            </Button>
+            <Button loading={busy} disabled={!quick.title || quick.title.length < 2} onClick={addTask}>
+              إضافة
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-3">
+          <Field label="عنوان المهمة">
+            <Input
+              value={quick.title ?? ""}
+              onChange={(e) => setQuick({ ...quick, title: e.target.value })}
+              placeholder="اتصال متابعة"
+              autoFocus
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="الأولوية">
+              <Select
+                value={quick.priority ?? "MEDIUM"}
+                onChange={(e) => setQuick({ ...quick, priority: e.target.value })}
+              >
+                <option value="URGENT">عاجلة</option>
+                <option value="HIGH">مرتفعة</option>
+                <option value="MEDIUM">متوسطة</option>
+                <option value="LOW">منخفضة</option>
+              </Select>
+            </Field>
+            <Field label="الاستحقاق">
+              <Input
+                type="date"
+                value={quick.dueAt ?? ""}
+                onChange={(e) => setQuick({ ...quick, dueAt: e.target.value })}
+              />
+            </Field>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* quick appointment */}
+      <Dialog
+        open={apptDialog}
+        onClose={() => setApptDialog(false)}
+        title="جدولة موعد زيارة"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setApptDialog(false)}>
+              إلغاء
+            </Button>
+            <Button loading={busy} disabled={!quick.startsAt} onClick={addAppointment}>
+              جدولة
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-3">
+          <Field label="التاريخ والوقت">
+            <Input
+              type="datetime-local"
+              value={quick.startsAt ?? ""}
+              onChange={(e) => setQuick({ ...quick, startsAt: e.target.value })}
+              autoFocus
+            />
+          </Field>
+          <Field label="المشروع">
+            <Select
+              value={quick.projectId ?? ""}
+              onChange={(e) => setQuick({ ...quick, projectId: e.target.value })}
+            >
+              <option value="">غير محدد</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="المكان">
+            <Input
+              value={quick.location ?? ""}
+              onChange={(e) => setQuick({ ...quick, location: e.target.value })}
+              placeholder="موقع المشروع"
+            />
+          </Field>
+        </div>
+      </Dialog>
+
+      {/* merge confirm */}
+      <Dialog
+        open={mergeWith !== null}
+        onClose={() => setMergeWith(null)}
+        title="دمج السجلين"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setMergeWith(null)}>
+              إلغاء
+            </Button>
+            <Button loading={busy} onClick={merge}>
+              تأكيد الدمج
+            </Button>
+          </>
+        }
+      >
+        <p className="text-[13.5px] leading-relaxed text-dim">
+          سيُدمج <b className="text-fg">{mergeWith?.fullName ?? mergeWith?.igUsername ?? "السجل المكرر"}</b>{" "}
+          في هذا العميل: تنتقل الملاحظات والمهام والمواعيد إليه، وتُملأ الحقول الفارغة فقط دون استبدال بياناته
+          الحالية. السجل المكرر لا يُحذف — يبقى مؤرشفًا ومرتبطًا لأغراض التدقيق.
+        </p>
+      </Dialog>
+    </Shell>
   );
 }

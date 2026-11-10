@@ -1,0 +1,12 @@
+-- Grandfather every account that already existed when verification shipped.
+--
+-- The first attempt at this compared each user's createdAt against a hard-coded
+-- cutoff date in the application. That is worse than it looks: the constant has
+-- to be kept in step in two places, it is untestable for anything created near
+-- the boundary, and whether a given account is grandfathered depends on how the
+-- server's clock relates to that literal.
+--
+-- Doing it here instead makes it a fact in the data. Whoever exists at the
+-- moment this runs is verified; everyone created afterwards has to prove their
+-- address, and the application only ever asks "is emailVerifiedAt null".
+UPDATE "users" SET "emailVerifiedAt" = "createdAt" WHERE "emailVerifiedAt" IS NULL;

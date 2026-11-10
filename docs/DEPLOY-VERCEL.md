@@ -48,13 +48,13 @@ npm run db:seed
 1. **vercel.com** → Add New → Project → استورد مستودع `leadra-ai`
 2. قبل Deploy، أضف **Environment Variables**:
 
-| المتغير | القيمة |
-|---|---|
-| `DATABASE_URL` | رابط Neon |
-| `TOKEN_ENCRYPTION_KEY` | ناتج `openssl rand -base64 32` |
-| `CRON_SECRET` | ناتج `openssl rand -hex 24` |
-| `ANTHROPIC_API_KEY` | من console.anthropic.com |
-| `APP_URL` | `https://اسم-مشروعك.vercel.app` (حدّثه بعد أول نشر إذا اختلف) |
+| المتغير                                                     | القيمة                                                                            |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                              | رابط Neon                                                                         |
+| `TOKEN_ENCRYPTION_KEY`                                      | ناتج `openssl rand -base64 32`                                                    |
+| `CRON_SECRET`                                               | ناتج `openssl rand -hex 24`                                                       |
+| `ANTHROPIC_API_KEY`                                         | من console.anthropic.com                                                          |
+| `APP_URL`                                                   | `https://اسم-مشروعك.vercel.app` (حدّثه بعد أول نشر إذا اختلف)                     |
 | `META_APP_ID` `META_APP_SECRET` `META_WEBHOOK_VERIFY_TOKEN` | من Meta App (اترك فارغة الآن إذا لم تنشئه بعد — المنصة تشتغل بالبيانات التجريبية) |
 
 3. اضغط **Deploy**
@@ -64,12 +64,14 @@ npm run db:seed
 `vercel.json` يعرّف Cron كل دقيقة على `/api/worker/drain`.
 
 ⚠️ **خطة Vercel المجانية (Hobby) تحدد الـ Cron بمرة واحدة يومياً.** خياراك:
+
 - **Vercel Pro** ($20/شهر): الـ Cron كل دقيقة يشتغل مباشرة، لا شيء إضافي
 - **مجاناً**: سجل في **cron-job.org** وأنشئ مهمة كل دقيقة تستدعي:
   `https://اسم-مشروعك.vercel.app/api/worker/drain`
   مع Header: `Authorization: Bearer قيمة-CRON_SECRET`
 
 اختبر يدوياً:
+
 ```bash
 curl https://اسم-مشروعك.vercel.app/api/worker/drain -H "Authorization: Bearer CRON_SECRET"
 # المفروض يرجع {"processed":0,"failed":0,"dead":0}
@@ -90,9 +92,9 @@ curl https://اسم-مشروعك.vercel.app/api/worker/drain -H "Authorization: 
 
 ## مشاكل شائعة
 
-| العرض | الحل |
-|---|---|
-| Build يفشل عند Prisma | تأكد `DATABASE_URL` مضاف بمتغيرات Vercel لكل البيئات (Production + Preview) |
-| دخول ناجح ثم صفحة فارغة | حدّث `APP_URL` ليطابق الرابط الفعلي وأعد النشر |
-| الرسائل لا تُعالج | الـ Cron ما يشتغل — راجع الخطوة 6 واختبر بـ curl |
-| ردود AI لا تظهر | تحقق من رصيد `ANTHROPIC_API_KEY` وراجع Logs بـ Vercel → Functions |
+| العرض                   | الحل                                                                        |
+| ----------------------- | --------------------------------------------------------------------------- |
+| Build يفشل عند Prisma   | تأكد `DATABASE_URL` مضاف بمتغيرات Vercel لكل البيئات (Production + Preview) |
+| دخول ناجح ثم صفحة فارغة | حدّث `APP_URL` ليطابق الرابط الفعلي وأعد النشر                              |
+| الرسائل لا تُعالج       | الـ Cron ما يشتغل — راجع الخطوة 6 واختبر بـ curl                            |
+| ردود AI لا تظهر         | تحقق من رصيد `ANTHROPIC_API_KEY` وراجع Logs بـ Vercel → Functions           |

@@ -1,7 +1,9 @@
 /**
- * GET    /api/knowledge-sources/:id  — source + its chunks (what the AI reads)
- * PATCH  /api/knowledge-sources/:id  — title, project, enable/disable, or replace content (new version)
- * DELETE /api/knowledge-sources/:id
+ * Editing and removing a knowledge source.
+ *
+ * Editing the content re-chunks it: the old chunks are what the assistant is
+ * currently quoting, so leaving them behind would keep stale facts in play
+ * while the operator believes they corrected them.
  */
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -12,72 +14,111 @@ import { TenantMismatchError } from "@/lib/tenant";
 import { audit } from "@/lib/audit";
 import { chunkText } from "@/lib/ai/knowledge";
 
-function idFrom(url: string) {
-  return new URL(url).pathname.split("/").at(-1)!;
-}
-
-async function load(id: string, organizationId: string) {
-  const source = await prisma.knowledgeSource.findFirst({ where: { id, organizationId } });
-  if (!source) throw new TenantMismatchError();
-  return source;
+function idFrom(pathname: string) {
+  return pathname.split("/").at(-1)!;
 }
 
 export const GET = withAuth(async (req, ctx) => {
   requirePermission(ctx.role, "knowledge.manage");
-  const source = await load(idFrom(req.url), ctx.organizationId);
-  const documents = await prisma.knowledgeDocument.findMany({
-    where: { sourceId: source.id },
-    orderBy: { chunkIndex: "asc" },
-    select: { id: true, chunkIndex: true, content: true },
-    take: 200,
+  const id = idFrom(req.nextUrl.pathname);
+
+  const source = await prisma.knowledgeSource.findFirst({
+    where: { id, organizationId: ctx.organizationId },
+    include: { documents: { orderBy: { chunkIndex: "asc" } }, project: { select: { id: true, name: true } } },
   });
-  return NextResponse.json({ ...source, documents });
+  if (!source) throw new TenantMismatchError();
+
+  // reassemble so the editor shows what was originally pasted
+  return NextResponse.json({
+    source: { ...source, documents: undefined },
+    content: source.documents.map((d) => d.content).join("\n\n"),
+    chunks: source.documents.length,
+  });
 });
 
 const patchSchema = z.object({
   title: z.string().min(2).max(300).optional(),
-  projectId: z.string().nullable().optional(),
-  status: z.enum(["ACTIVE", "DISABLED"]).optional(),
   content: z.string().min(10).max(500_000).optional(),
+  projectId: z.string().nullish(),
+  status: z.enum(["ACTIVE", "DISABLED"]).optional(),
 });
 
 export const PATCH = withAuth(async (req, ctx, correlationId) => {
   requirePermission(ctx.role, "knowledge.manage");
-  const source = await load(idFrom(req.url), ctx.organizationId);
-  const body = patchSchema.safeParse(await req.json());
-  if (!body.success) return err(422, "VALIDATION", body.error.issues.map((i) => i.message).join("; "), correlationId);
-  const { content, ...data } = body.data;
+  const id = idFrom(req.nextUrl.pathname);
 
-  if (data.projectId) {
-    const project = await prisma.project.findFirst({ where: { id: data.projectId, organizationId: ctx.organizationId } });
-    if (!project) return err(404, "NOT_FOUND", "Project not found", correlationId);
+  const body = patchSchema.safeParse(await req.json().catch(() => ({})));
+  if (!body.success) {
+    return err(422, "VALIDATION", body.error.issues.map((i) => i.message).join("; "), correlationId);
   }
 
-  let chunks: number | undefined;
-  if (content) {
-    const parts = chunkText(content);
-    await prisma.$transaction([
-      prisma.knowledgeDocument.deleteMany({ where: { sourceId: source.id } }),
-      prisma.knowledgeDocument.createMany({ data: parts.map((c, i) => ({ sourceId: source.id, chunkIndex: i, content: c })) }),
-    ]);
-    chunks = parts.length;
-  }
-  const updated = await prisma.knowledgeSource.update({
-    where: { id: source.id },
-    data: { ...data, ...(content ? { version: { increment: 1 } } : {}) },
+  const source = await prisma.knowledgeSource.findFirst({
+    where: { id, organizationId: ctx.organizationId },
   });
+  if (!source) throw new TenantMismatchError();
+
+  if (body.data.projectId) {
+    const project = await prisma.project.findFirst({
+      where: { id: body.data.projectId, organizationId: ctx.organizationId },
+    });
+    if (!project) return err(422, "VALIDATION", "المشروع غير موجود", correlationId);
+  }
+
+  const chunks = body.data.content !== undefined ? chunkText(body.data.content) : null;
+
+  const [updated] = await prisma.$transaction([
+    prisma.knowledgeSource.update({
+      where: { id: source.id },
+      data: {
+        ...(body.data.title ? { title: body.data.title } : {}),
+        ...(body.data.projectId !== undefined ? { projectId: body.data.projectId } : {}),
+        ...(body.data.status ? { status: body.data.status } : {}),
+        // bump the version so it is visible that the assistant's source changed
+        ...(chunks ? { version: { increment: 1 }, status: "ACTIVE" as const } : {}),
+      },
+    }),
+    // replace, never append: stale chunks would keep being quoted
+    ...(chunks
+      ? [
+          prisma.knowledgeDocument.deleteMany({ where: { sourceId: source.id } }),
+          prisma.knowledgeDocument.createMany({
+            data: chunks.map((content, i) => ({ sourceId: source.id, chunkIndex: i, content })),
+          }),
+        ]
+      : []),
+  ]);
+
   await audit({
-    ctx, action: "knowledge.update", entityType: "knowledge_source", entityId: source.id,
-    before: { title: source.title, status: source.status, version: source.version },
-    after: { title: updated.title, status: updated.status, version: updated.version, chunks }, correlationId,
+    ctx,
+    action: "knowledge.update",
+    entityType: "knowledge_source",
+    entityId: source.id,
+    before: { title: source.title, version: source.version },
+    after: { title: updated.title, version: updated.version, rechunked: chunks?.length ?? 0 },
+    correlationId,
   });
-  return NextResponse.json({ ...updated, chunks });
+
+  return NextResponse.json({ ...updated, chunks: chunks?.length });
 });
 
 export const DELETE = withAuth(async (req, ctx, correlationId) => {
   requirePermission(ctx.role, "knowledge.manage");
-  const source = await load(idFrom(req.url), ctx.organizationId);
+  const id = idFrom(req.nextUrl.pathname);
+
+  const source = await prisma.knowledgeSource.findFirst({
+    where: { id, organizationId: ctx.organizationId },
+  });
+  if (!source) throw new TenantMismatchError();
+
+  // documents cascade with the source
   await prisma.knowledgeSource.delete({ where: { id: source.id } });
-  await audit({ ctx, action: "knowledge.delete", entityType: "knowledge_source", entityId: source.id, before: { title: source.title }, correlationId });
+  await audit({
+    ctx,
+    action: "knowledge.delete",
+    entityType: "knowledge_source",
+    entityId: source.id,
+    before: { title: source.title },
+    correlationId,
+  });
   return NextResponse.json({ ok: true });
 });

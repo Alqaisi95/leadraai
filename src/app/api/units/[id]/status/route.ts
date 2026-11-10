@@ -37,8 +37,13 @@ export const PATCH = withAuth(async (req, ctx, correlationId) => {
   ]);
 
   await audit({
-    ctx, action: "unit.status_change", entityType: "unit", entityId: unit.id,
-    before: { status: unit.status }, after: { status: updated.status }, correlationId,
+    ctx,
+    action: "unit.status_change",
+    entityType: "unit",
+    entityId: unit.id,
+    before: { status: unit.status },
+    after: { status: updated.status },
+    correlationId,
   });
 
   return NextResponse.json(updated);

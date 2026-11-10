@@ -8,7 +8,11 @@ export const GET = withAuth(async (req, ctx) => {
   requirePermission(ctx.role, "reports.read.all");
   const days = Math.min(365, Number(new URL(req.url).searchParams.get("days") ?? 30));
   const since = new Date(Date.now() - days * 86400_000);
-  const where = { organizationId: ctx.organizationId, createdAt: { gte: since }, runType: "RESPONSE" as const };
+  const where = {
+    organizationId: ctx.organizationId,
+    createdAt: { gte: since },
+    runType: "RESPONSE" as const,
+  };
 
   const [total, handoffs, failures, agg] = await Promise.all([
     prisma.aiRun.count({ where }),

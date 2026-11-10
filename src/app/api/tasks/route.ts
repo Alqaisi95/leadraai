@@ -8,9 +8,18 @@ import { scoped } from "@/lib/tenant";
 export const GET = withAuth(async (req, ctx) => {
   requirePermission(ctx.role, "tasks.manage.own");
   const { skip, take, page, pageSize } = parsePagination(req);
-  const where = scoped(ctx, hasPermission(ctx.role, "tasks.manage.any") ? {} : { assigneeMemberId: ctx.memberId });
+  const where = scoped(
+    ctx,
+    hasPermission(ctx.role, "tasks.manage.any") ? {} : { assigneeMemberId: ctx.memberId },
+  );
   const [items, total] = await Promise.all([
-    prisma.task.findMany({ where, orderBy: [{ status: "asc" }, { dueAt: "asc" }], skip, take, include: { lead: { select: { fullName: true, igUsername: true } } } }),
+    prisma.task.findMany({
+      where,
+      orderBy: [{ status: "asc" }, { dueAt: "asc" }],
+      skip,
+      take,
+      include: { lead: { select: { fullName: true, igUsername: true } } },
+    }),
     prisma.task.count({ where }),
   ]);
   return NextResponse.json({ items, page, pageSize, total });
@@ -27,7 +36,8 @@ const createSchema = z.object({
 export const POST = withAuth(async (req, ctx, correlationId) => {
   requirePermission(ctx.role, "tasks.manage.own");
   const body = createSchema.safeParse(await req.json());
-  if (!body.success) return err(422, "VALIDATION", body.error.issues.map(i => i.message).join("; "), correlationId);
+  if (!body.success)
+    return err(422, "VALIDATION", body.error.issues.map((i) => i.message).join("; "), correlationId);
 
   const assignee = body.data.assigneeMemberId ?? ctx.memberId;
   if (assignee !== ctx.memberId) requirePermission(ctx.role, "tasks.manage.any");

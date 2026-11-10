@@ -7,6 +7,7 @@
 import { prisma } from "./db";
 import { ingestInboundMessage } from "./conversations";
 import { handleInboundWithAi } from "./ai/orchestrator";
+import { describeAttachments, summarizeAttachments, type DescribedAttachment } from "./attachments";
 
 const MAX_ATTEMPTS = 5;
 
@@ -49,7 +50,8 @@ async function processEvent(eventId: string) {
         data: {
           organizationId: integration.organizationId,
           name: ref.ads_context_data?.ad_title ?? `Instagram Ad ${adId}`,
-          source: "PAID", adId,
+          source: "PAID",
+          adId,
           utm: ref.ref ? { ref: ref.ref } : undefined,
         },
       });
@@ -75,9 +77,54 @@ async function processEvent(eventId: string) {
     }
   }
 
-  if (messageCreated && messaging.message?.text) {
+  if (!messageCreated) return;
+
+  if (messaging.message?.text) {
     await handleInboundWithAi(conversation.id);
+    return;
   }
+
+  // No text. Until now this returned here and the customer got nothing back at
+  // all — a voice note or a photo simply vanished from their point of view, and
+  // the agent saw an empty bubble with no indication anything had been sent.
+  //
+  // The assistant still must not answer: nothing is transcribed, so any reply
+  // would be invented. So the conversation goes to a human, loudly.
+  const described = describeAttachments(messaging.message?.attachments);
+  if (described.length > 0) {
+    await escalateUnreadableMessage(conversation.id, described);
+  }
+}
+
+/**
+ * Hand a non-text message to a person.
+ *
+ * Mirrors the handoff the orchestrator performs for low confidence: same status
+ * transition, same notification shape, so the inbox and the reports treat it
+ * identically to any other escalation.
+ */
+async function escalateUnreadableMessage(conversationId: string, described: DescribedAttachment[]) {
+  const conv = await prisma.conversation.findUniqueOrThrow({
+    where: { id: conversationId },
+    select: { id: true, organizationId: true, status: true, lead: { select: { ownerMemberId: true } } },
+  });
+
+  // An agent already working this conversation does not need it reassigned.
+  if (conv.status === "AI_ACTIVE") {
+    await prisma.conversation.update({ where: { id: conv.id }, data: { status: "NEEDS_HUMAN" } });
+  }
+
+  await prisma.notification.create({
+    data: {
+      organizationId: conv.organizationId,
+      recipientMemberId: conv.lead?.ownerMemberId ?? null,
+      type: "HUMAN_REQUESTED",
+      title: `${summarizeAttachments(described)} تحتاج ردًا بشريًا`,
+      body: "المساعد الآلي لا يقرأ المرفقات بعد، والمحادثة بانتظار موظف.",
+      entityType: "conversation",
+      entityId: conv.id,
+    },
+  });
 }
 
 async function markFailure(eventId: string, error: unknown) {
@@ -108,7 +155,9 @@ async function markFailure(eventId: string, error: unknown) {
 
 /** Process up to `limit` queued events. Returns counts. Safe to call concurrently. */
 export async function processBatch(limit = 10) {
-  let processed = 0, failed = 0, dead = 0;
+  let processed = 0,
+    failed = 0,
+    dead = 0;
   for (let i = 0; i < limit; i++) {
     const eventId = await claimNext();
     if (!eventId) break;
