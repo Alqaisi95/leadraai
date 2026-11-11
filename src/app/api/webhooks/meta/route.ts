@@ -2,7 +2,15 @@
  * Meta Webhook Gateway (requirements §4.3):
  *  GET  — verify token handshake
  *  POST — verify X-Hub-Signature-256, store raw event, ACK 200 immediately.
- * NO synchronous processing, NO AI calls here. The worker consumes the queue.
+ * NO synchronous processing, NO AI calls before the ACK. The queue is the
+ * source of truth and the cron drain is the safety net.
+ *
+ * What changed: once the events are stored and the response is on its way,
+ * the route asks the runtime to start draining in the background (`after`).
+ * Before, a stored message waited for the next cron tick — a minute at best,
+ * and a full day on a host whose crons run daily — so "instant reply" depended
+ * entirely on a scheduler. The drain claims rows with SKIP LOCKED, so this and
+ * the cron can overlap without processing anything twice.
  *
  * Meta delivers every product an app subscribes to — Instagram, Page, Threads —
  * to the *same* callback URL, distinguished only by the top-level `object`
@@ -12,10 +20,14 @@
  * Any uncaught throw here becomes a 500, which Meta retries — so every failure
  * mode below returns a deliberate status instead.
  */
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { createHmac, timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/db";
 import { captureError } from "@/lib/monitoring";
+import { processBatch } from "@/lib/queue";
+
+// Room for the background drain: an AI reply takes seconds, not milliseconds.
+export const maxDuration = 60;
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
@@ -69,6 +81,7 @@ export async function POST(req: NextRequest) {
     return new NextResponse("EVENT_RECEIVED", { status: 200 });
   }
 
+  let stored = 0;
   try {
     for (const entry of (payload.entry ?? []) as any[]) {
       // `changes` carries comments and mentions; we subscribe to DMs only, so
@@ -84,6 +97,7 @@ export async function POST(req: NextRequest) {
               status: "QUEUED",
             },
           });
+          stored++;
         } catch (e: any) {
           if (e?.code !== "P2002") throw e; // P2002 = duplicate → already received
         }
@@ -94,6 +108,18 @@ export async function POST(req: NextRequest) {
     // redeliver, which is what we want — the alternative is a lost message.
     captureError(e, { route: "/api/webhooks/meta" });
     return new NextResponse("Storage failure", { status: 500 });
+  }
+
+  // Duplicates store nothing, so a redelivery does not start a second drain.
+  if (stored > 0) {
+    after(async () => {
+      try {
+        await processBatch(stored + 2);
+      } catch (e) {
+        // The events are safely queued; the cron drain will pick them up.
+        captureError(e, { route: "/api/webhooks/meta", phase: "background_drain" });
+      }
+    });
   }
 
   return new NextResponse("EVENT_RECEIVED", { status: 200 });
