@@ -620,6 +620,9 @@ model WebhookEvent {
   status          WebhookEventStatus  @default(RECEIVED)
   attempts        Int                 @default(0)
   receivedAt      DateTime            @default(now())
+  // Set when a worker claims the event; lets the queue reclaim claims whose
+  // worker died instead of leaving them in PROCESSING forever.
+  claimedAt       DateTime?
   processedAt     DateTime?
   lastError       String?
 

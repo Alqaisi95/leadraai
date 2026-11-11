@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { AtSign, Check, Copy, Plug, RefreshCw, TriangleAlert, X } from "lucide-react";
+import { AtSign, Check, Copy, MailX, Plug, RefreshCw, RotateCw, TriangleAlert, X } from "lucide-react";
 import Shell from "@/components/Shell";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -51,7 +51,29 @@ export default function IntegrationsPage() {
   const [diag, setDiag] = useState<any>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [failed, setFailed] = useState<any[]>([]);
   const toast = useToast();
+
+  // Separate from load(): a role that cannot read this list must not blank the
+  // rest of the page, and its absence is the normal, healthy state.
+  const loadFailed = () =>
+    api("/api/webhook-events")
+      .then((d) => setFailed(d.items))
+      .catch(() => setFailed([]));
+
+  const retryFailed = async (id: string) => {
+    setBusy(`retry:${id}`);
+    try {
+      await api("/api/webhook-events", { method: "POST", body: JSON.stringify({ id }) });
+      toast("success", "أُعيدت الرسالة إلى المعالجة");
+      setFailed((items) => items.filter((i) => i.id !== id));
+    } catch (e: any) {
+      toast("error", e.message);
+      loadFailed();
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const load = () =>
     Promise.all([
@@ -61,6 +83,7 @@ export default function IntegrationsPage() {
 
   useEffect(() => {
     load();
+    loadFailed();
     // surface the OAuth round-trip result rather than leaving the user guessing
     const p = new URLSearchParams(window.location.search);
     if (p.get("connected")) {
@@ -245,6 +268,50 @@ export default function IntegrationsPage() {
           );
         })}
       </div>
+
+      {failed.length > 0 && (
+        <Card className="mt-4 p-4" data-testid="failed-events">
+          <div className="mb-1 flex items-center gap-2">
+            <MailX size={16} className="shrink-0 text-danger" />
+            <h2 className="text-[14px] font-bold">رسائل تعذّرت معالجتها ({failed.length})</h2>
+          </div>
+          <p className="mb-3 text-[12.5px] leading-relaxed text-dim">
+            وصلت هذه الرسائل من عملائك وفشلت معالجتها خمس مرات، فلم تظهر في صندوق المحادثات. أصلح السبب إن كان
+            ظاهرًا (مثل إعادة ربط الحساب) ثم أعد المحاولة.
+          </p>
+          <div className="grid gap-2">
+            {failed.map((f) => (
+              <div
+                key={f.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-field border border-line px-3 py-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13px] font-semibold">
+                    {f.preview ?? (f.hasAttachments ? "مرفق بلا نص" : "رسالة بلا نص")}
+                  </div>
+                  <div className="mt-0.5 flex flex-wrap gap-x-3 text-[11.5px] text-dim">
+                    <span>{new Date(f.receivedAt).toLocaleString("ar-IQ")}</span>
+                    {f.lastError && (
+                      <span className="truncate" dir="ltr">
+                        {String(f.lastError).slice(0, 90)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0"
+                  loading={busy === `retry:${f.id}`}
+                  onClick={() => retryFailed(f.id)}
+                >
+                  <RotateCw size={12} /> إعادة المحاولة
+                </Button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       <Dialog
         open={confirmId !== null}
