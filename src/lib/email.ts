@@ -23,25 +23,21 @@
  *     requests, never the point of them, and in-app notifications still work.
  *     Callers already treat false as "not sent" rather than as an error.
  *
- * Like the database transports in ./db, the Node specifier is assembled at
- * runtime. That is load-bearing: esbuild bundles for the `workerd` condition,
- * under which a literal `import("nodemailer")` drags `node:net` into the
- * bundle and fails the Worker build over a branch that never runs there.
+ * nodemailer is loaded with a literal dynamic import, inside the SMTP branch.
+ * It used to be loaded through a module name assembled at runtime; Turbopack
+ * compiles that to a stub that throws, so SMTP mail never left a real server
+ * even though the unit tests passed. A literal import is one the bundler can
+ * follow, and keeping it dynamic means the Worker never evaluates it.
  */
 
-/** `require` by a name the bundler cannot fold to a literal. */
-function requireAtRuntime(parts: string[]): any {
-  const specifier = parts.join("");
-  return require(specifier);
-}
-
-/** The Email Service binding, or undefined when not running on Workers. */
+/**
+ * The Email Service binding, or undefined when not running on Workers.
+ * Read from the slot OpenNext publishes the request context in — see ./db.
+ */
 function emailBinding(): { send: (msg: unknown) => Promise<unknown> } | undefined {
-  try {
-    return requireAtRuntime(["@opennextjs", "/cloudflare"]).getCloudflareContext?.()?.env?.EMAIL;
-  } catch {
-    return undefined;
-  }
+  const cf = (globalThis as unknown as Record<symbol, unknown>)[Symbol.for("__cloudflare-context__")] as
+    { env?: { EMAIL?: { send: (msg: unknown) => Promise<unknown> } } } | undefined;
+  return cf?.env?.EMAIL;
 }
 
 /**
@@ -129,7 +125,7 @@ async function sendViaSmtp(
   text: string,
   attachments?: EmailAttachment[],
 ): Promise<boolean> {
-  const nodemailer = requireAtRuntime(["node", "mailer"]);
+  const nodemailer = (await import("nodemailer")).default;
   const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT ?? 587),
