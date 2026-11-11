@@ -1,0 +1,14 @@
+name: engines
+on:
+  push: { branches: ["ci/prisma-engines"] }
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+      - run: tar czf engines.tgz node_modules/.prisma node_modules/@prisma/engines node_modules/prisma
+      - uses: actions/upload-artifact@v4
+        with: { name: engines, path: engines.tgz, retention-days: 1 }
