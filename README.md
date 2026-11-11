@@ -1,10 +1,19 @@
-# Leadra AI — الأساس التقني (المرحلة الأولى)
+# Leadra AI
 
-منصة SaaS متعددة الشركات تربط حسابات Instagram المهنية بذكاء اصطناعي وCRM عقاري.
+منصة SaaS متعددة الشركات تربط حسابات Instagram المهنية بمساعد ذكاء اصطناعي وCRM عقاري. الواجهة عربية RTL.
 
-**الإصدار: v2.0** — يغطي المراحل 1–5 من متطلبات v1 **بالإضافة إلى محاور v2 (R1–R6)**: أمان مشدد (Cookies+CSRF، MFA TOTP، Rate Limiting، عزل المحادثات للموظفين)، محرك Jobs مجدولة، فرض حدود الاشتراكات، التقاط حملات الإعلانات، تصدير التقارير، حارس أسعار مطور للعربية، و**25 اختباراً آلياً ناجحاً** مع CI.
+```
+رسالة Instagram → Webhook → طابور → عميل (Lead) → تنقيط → رد آلي بالعربية
+                                  → صندوق محادثات للموظفين → مسار بيع → مطابقة بالوحدات
+```
 
-**نتيجة الاختبارات:** `25 passed (25)` — RBAC، حارس الأسعار (أرقام هندية + "95 ألف")، TOTP، تشفير الرموز. اختبارات العزل تعمل في CI مع Postgres.
+**المكدّس:** Next.js 16 (App Router) · TypeScript · Prisma 5 + PostgreSQL (Neon) · Tailwind v4 · Anthropic SDK · Vitest + Playwright · Cloudflare Workers عبر OpenNext (و Vercel).
+
+> ⚠️ نسخة Next هذه تختلف عمّا تعرفه — اقرأ `AGENTS.md` والأدلة في `node_modules/next/dist/docs/` قبل كتابة كود.
+
+**التحقق:** كل دفعة تمرّ بثلاث مهام في CI — `test` (typecheck، lint، اختبارات الوحدة والعزل على Postgres، البناء)، `e2e` (Playwright)، و`workers` (بناء الـ Worker وتشغيل طلبات حقيقية في `workerd`). لا رقم اختبارات مكتوب هنا عمدًا: الأرقام المكتوبة تتقادم — شغّل `npm test`.
+
+**ما لا يعمل بعد، ولأسباب خارج الكود:** رصيد Anthropic، ربط حساب Instagram حقيقي، Meta App Review، وبوابة الدفع. التفاصيل في `docs/META-APP-REVIEW.md` و`CLOUDFLARE.md`.
 
 ---
 
@@ -13,7 +22,7 @@
 | القرار                                                           | البديل المرفوض               | السبب                                                                                                                 |
 | ---------------------------------------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | **Monolith أولاً** بطبقات نظيفة (`src/lib` كطبقة Domain)         | Microservices من اليوم الأول | 16 خدمة منفصلة لفريق صغير = انتحار تشغيلي. الطبقات النظيفة تسمح بفصل الـ Workers لاحقاً دون إعادة كتابة               |
-| **Next.js 14 + TypeScript**                                      | Laravel / Django             | لغة واحدة للواجهة والخادم، أسهل توظيف بالمنطقة، ودعم RTL ممتاز                                                        |
+| **Next.js + TypeScript**                                         | Laravel / Django             | لغة واحدة للواجهة والخادم، أسهل توظيف بالمنطقة، ودعم RTL ممتاز                                                        |
 | **PostgreSQL + Prisma**                                          | MongoDB                      | البيانات علائقية بامتياز (40+ جدول مترابط)، وpgvector يغطي RAG بالمرحلة الرابعة دون قاعدة Vector منفصلة               |
 | **عزل Tenant على مستوى الصف** (`organizationId` بكل جدول تشغيلي) | Schema لكل شركة              | أبسط تشغيلياً حتى مئات الشركات؛ الحارس في `src/lib/tenant.ts` يعيد **404 وليس 403** كي لا يُكشف وجود سجلات شركات أخرى |
 | **Session tokens مُعمّاة (hashed opaque)**                       | JWT stateless                | تتيح "إلغاء جميع الجلسات عند الاشتباه" فوراً (متطلب §4.2) — JWT لا يُلغى قبل انتهائه                                  |
@@ -34,7 +43,7 @@ docker run -d --name leadra-pg -e POSTGRES_USER=leadra -e POSTGRES_PASSWORD=lead
 # 2. الإعداد
 cp .env.example .env        # عدّل DATABASE_URL إذا لزم
 npm install
-npx prisma migrate dev --name init
+npx prisma migrate deploy
 npm run db:seed             # شركة تجريبية + Pipeline + مشروع + وحدات + قواعد Scoring
 
 # 3. التشغيل
@@ -65,16 +74,20 @@ curl localhost:3000/api/projects \
 ## بنية المشروع
 
 ```
-prisma/schema.prisma        نموذج البيانات الكامل (40+ جدول، يغطي المراحل 1–4)
-prisma/seed.ts              بيانات تجريبية عربية كاملة
-src/lib/
-  auth.ts                   تسجيل دخول + قفل مؤقت + جلسات قابلة للإلغاء
-  rbac.ts                   مصفوفة الصلاحيات الستة أدوار
-  tenant.ts                 حارس عزل الشركات
-  audit.ts                  سجل تدقيق Append-only مع Redaction تلقائي
-  api.ts                    Correlation ID + أخطاء منظمة + Pagination
-src/app/api/                مسارات نموذجية تطبق النمط الكامل
-docs/ROADMAP.md             خطة المراحل 2–6 بالتفصيل
+prisma/schema.prisma        نموذج البيانات الكامل
+prisma/migrations/          بعضها مكتوب يدويًا — استخدم `migrate deploy` لا `migrate dev`
+worker/index.ts             Worker مستقل يستهلك الطابور (للاستضافة طويلة التشغيل)
+cloudflare-worker.ts        مدخل الـ Worker على Cloudflare (يضيف معالج الـ cron)
+src/lib/                    طبقة الـ Domain — المنطق كله هنا
+  auth · rbac · tenant · audit · api      الأمان والعزل والصلاحيات
+  queue · jobs · background               الطابور، الوظائف المجدولة، العمل بعد الرد
+  ai/                                     الـ Orchestrator وحارس الأسعار
+  db · email                              عميل Prisma والبريد لكل بيئة تشغيل
+src/app/api/                مسارات الـ API
+src/app/<page>/             الصفحات
+tests/ · e2e/               اختبارات الوحدة والعزل · Playwright
+scripts/create-user.ts      إنشاء حساب جاهز (مع اشتراك) بأمر واحد
+CLOUDFLARE.md               النشر على Workers والتحويل من Vercel
 ```
 
 ## ما المُنجز مقابل وثيقة المتطلبات
@@ -111,5 +124,6 @@ docs/ROADMAP.md             خطة المراحل 2–6 بالتفصيل
 
 **المتبقي للمرحلة 6 (الإطلاق)** — انظر docs/ROADMAP.md:
 
-- Meta App Review وBusiness Verification (ابدأ فوراً — الأطول زمنياً)
-- MFA TOTP فعلي، نقل الجلسة إلى httpOnly cookies، رفع ملفات PDF/DOCX لقاعدة المعرفة، pgvector (SQL جاهز في prisma/manual/)، مزامنة التقويم، اختبارات آلية، وPilot
+- Meta App Review وBusiness Verification (الأطول زمنيًا)
+- بوابة دفع أمام `POST /api/billing/plan`
+- Load testing على مسار الويبهوك، Backup/Restore drill، وPilot مع شركة واحدة
