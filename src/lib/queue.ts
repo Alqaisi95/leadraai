@@ -35,6 +35,15 @@ async function processEvent(eventId: string) {
     where: { provider: "INSTAGRAM", externalId: igBusinessId, status: "CONNECTED" },
   });
   if (!integration) throw new Error(`NO_INTEGRATION_FOR ${igBusinessId}`);
+  // The event arrives knowing only an Instagram id. Recording which tenant it
+  // turned out to belong to is what lets that tenant see — and retry — it if
+  // it later fails; without the stamp a failed event belongs to no one.
+  if (!event.organizationId) {
+    await prisma.webhookEvent.update({
+      where: { id: eventId },
+      data: { organizationId: integration.organizationId },
+    });
+  }
   if (messaging.message?.is_echo) return;
 
   // R3.2 — attribute conversation to a campaign from IG ad referral
@@ -148,12 +157,18 @@ async function markFailure(eventId: string, error: unknown) {
       ? await prisma.integration.findFirst({ where: { provider: "INSTAGRAM", externalId: igId } })
       : null;
     if (integration) {
+      if (!event.organizationId) {
+        await prisma.webhookEvent.update({
+          where: { id: eventId },
+          data: { organizationId: integration.organizationId },
+        });
+      }
       await prisma.notification.create({
         data: {
           organizationId: integration.organizationId,
           type: "WEBHOOK_FAILED",
           title: "فشل معالجة رسالة واردة",
-          body: `Event ${event.externalEventId} — يحتاج إعادة تشغيل يدوية`,
+          body: "تعذّرت معالجة رسالة من عميل بعد خمس محاولات. أعد المحاولة من مركز التكاملات.",
         },
       });
     }
@@ -240,4 +255,47 @@ export async function processBatch(limit = 10) {
     }
   }
   return { processed, failed, dead, reclaimed: reclaimed.requeued };
+}
+
+/**
+ * Dead-lettered events of one tenant, newest first, shaped for an operator.
+ *
+ * The raw payload is not returned: it is Meta's envelope, and the screen needs
+ * only who wrote, a glimpse of what, and why it failed.
+ */
+export async function listDeadLetters(organizationId: string, take = 50) {
+  const events = await prisma.webhookEvent.findMany({
+    where: { organizationId, status: "DEAD_LETTER" },
+    orderBy: { receivedAt: "desc" },
+    take,
+  });
+  return events.map((e) => {
+    const messaging = (e.rawPayload as any)?.messaging;
+    const text: string | undefined = messaging?.message?.text;
+    return {
+      id: e.id,
+      receivedAt: e.receivedAt,
+      attempts: e.attempts,
+      lastError: e.lastError,
+      senderId: (messaging?.sender?.id as string | undefined) ?? null,
+      preview: text ? text.slice(0, 120) : null,
+      hasAttachments:
+        Array.isArray(messaging?.message?.attachments) && messaging.message.attachments.length > 0,
+    };
+  });
+}
+
+/**
+ * Put a dead-lettered event back on the queue with a fresh set of attempts.
+ *
+ * Scoped by organisation in the same statement that changes the row, so an id
+ * from another tenant — or one that is not dead-lettered — changes nothing.
+ * Returns whether a row was requeued.
+ */
+export async function requeueDeadLetter(organizationId: string, id: string): Promise<boolean> {
+  const { count } = await prisma.webhookEvent.updateMany({
+    where: { id, organizationId, status: "DEAD_LETTER" },
+    data: { status: "QUEUED", attempts: 0, lastError: null, claimedAt: null },
+  });
+  return count === 1;
 }

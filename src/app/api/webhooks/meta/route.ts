@@ -20,11 +20,12 @@
  * Any uncaught throw here becomes a 500, which Meta retries — so every failure
  * mode below returns a deliberate status instead.
  */
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/db";
 import { captureError } from "@/lib/monitoring";
 import { processBatch } from "@/lib/queue";
+import { afterResponse } from "@/lib/background";
 
 // Room for the background drain: an AI reply takes seconds, not milliseconds.
 export const maxDuration = 60;
@@ -112,7 +113,7 @@ export async function POST(req: NextRequest) {
 
   // Duplicates store nothing, so a redelivery does not start a second drain.
   if (stored > 0) {
-    after(async () => {
+    afterResponse(async () => {
       try {
         await processBatch(stored + 2);
       } catch (e) {
