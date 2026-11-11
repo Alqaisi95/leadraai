@@ -37,6 +37,13 @@ module.exports = {
   // came back 403 and the page never hydrated. Dev-only; production is
   // unaffected by this setting.
   allowedDevOrigins: ["127.0.0.1", "localhost"],
+  // Left to the runtime's own module loader instead of being bundled. Prisma
+  // ships a separate build for Workers behind the `workerd` export condition,
+  // and pg reaches the network through pg-cloudflare there; bundling either
+  // would bake the Node build into the Worker. OpenNext resolves these with
+  // the workerd condition when it assembles the Worker, and Node resolves them
+  // normally everywhere else. (pg itself is already on Next's built-in list.)
+  serverExternalPackages: ["@prisma/client", ".prisma/client", "@prisma/adapter-pg"],
   reactStrictMode: true,
   poweredByHeader: false,
   async headers() {
